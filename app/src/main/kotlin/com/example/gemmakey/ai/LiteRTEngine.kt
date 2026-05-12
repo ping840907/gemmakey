@@ -2,55 +2,43 @@ package com.example.gemmakey.ai
 
 import android.content.Context
 import android.util.Log
+import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Conversation
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import java.io.File
 
-// ── LiteRT-LM imports ─────────────────────────────────────────────────────────
-// litert-lm is in alpha; import paths may shift between releases.
-// Primary API surface used here:
-//   LlmInference          — inference session
-//   LlmInferenceOptions   — builder for model path, tokens, accelerator
-import com.google.ai.edge.litert.lm.LlmInference
-import com.google.ai.edge.litert.lm.LlmInferenceOptions
-
 /**
- * Runs a LiteRT-compatible Gemma model fully on-device.
+ * On-device Gemma 4 E2B inference via the official LiteRT-LM Kotlin SDK.
  *
- * ## Supported model files
- * Any of the following (place one in a candidate path below):
- *   • gemma-3-1b-it-litert.bin    ← recommended for most phones (~800 MB)
- *   • gemma-3-4b-it-litert.bin    ← better quality, needs ~4 GB RAM
- *   • gemma-2-2b-it-litert.bin    ← well-tested alternative
+ * ## Model file
+ * Format : `.litertlm`
+ * Source  : Hugging Face — litert-community/gemma-4-E2B-it-litert-lm
+ *   (search "gemma-4-E2B-it-litert-lm" on huggingface.co/litert-community)
  *
- * ## Where to download
- *   1. Kaggle — official Google uploads:
- *        kaggle.com/models/google/gemma-3  (select LiteRT / TFLite variant)
- *        kaggle.com/models/google/gemma-2  (select LiteRT / TFLite variant)
- *   2. Hugging Face — search "gemma litert" or "gemma tflite":
- *        huggingface.co/google/gemma-3-1b-it-litert
- *        huggingface.co/google/gemma-2-2b-it-litert
- *   3. Google AI Edge GitHub (ai-edge-torch) — conversion tools and links.
+ * Recommended variant : `gemma-4-E2B-it-int4.litertlm`  (~1–2 GB)
  *
- * ## File placement (probed in order)
- *   1. <external-files-dir>/gemma-model.bin
- *   2. <internal-files-dir>/models/gemma-model.bin
+ * ## Placement (probed in order)
+ *   1. <external-files-dir>/gemma-4-E2B-it-int4.litertlm
+ *   2. <internal-files-dir>/models/gemma-4-E2B-it-int4.litertlm
  *
- * Rename your downloaded file to "gemma-model.bin" or update [MODEL_FILENAME].
+ * ## Acceleration
+ *   Backend.NPU  → Android NNAPI, routes to on-chip NPU/DSP
+ *   Backend.GPU  → OpenCL/Vulkan GPU path (auto-fallback)
+ *   Backend.CPU  → XNNPACK CPU path (final fallback)
  *
- * ## Acceleration hierarchy
- *   1. NNAPI → routes to on-chip NPU/DSP (Qualcomm Hexagon, MediaTek APU,
- *      Samsung Exynos NPU, Google Tensor Edge TPU, etc.)
- *   2. GPU delegate — automatic fallback when NNAPI is unavailable.
- *   3. CPU XNNPACK — final guaranteed fallback on all devices.
+ * The engine tries NPU first; falls back to GPU, then CPU on error.
  */
 class LiteRTEngine(private val context: Context) : AIEngine {
 
     private val TAG = "LiteRTEngine"
 
-    // Update this name to match your downloaded file, e.g. "gemma-3-1b-it-litert.bin"
-    private val MODEL_FILENAME = "gemma-model.bin"
+    val MODEL_FILENAME = "gemma-4-E2B-it-int4.litertlm"
 
     private val candidatePaths: List<String>
         get() = listOf(
@@ -58,7 +46,8 @@ class LiteRTEngine(private val context: Context) : AIEngine {
             File(context.filesDir, "models/$MODEL_FILENAME").absolutePath
         )
 
-    private var inference: LlmInference? = null
+    private var engine: Engine? = null
+    private var conversation: Conversation? = null
 
     override var isReady: Boolean = false
         private set
@@ -68,31 +57,41 @@ class LiteRTEngine(private val context: Context) : AIEngine {
     override suspend fun prepare() = withContext(Dispatchers.IO) {
         val modelPath = candidatePaths.firstOrNull { File(it).exists() }
             ?: throw IllegalStateException(
-                "Gemma model not found. Place $MODEL_FILENAME in:\n" +
+                "Model not found. Place $MODEL_FILENAME in:\n" +
                         candidatePaths.joinToString("\n") +
                         "\n\nDownload from:\n" +
-                        "  Kaggle:       kaggle.com/models/google/gemma-3\n" +
-                        "  Hugging Face: huggingface.co/google/gemma-3-1b-it-litert"
+                        "  huggingface.co/litert-community/gemma-4-E2B-it-litert-lm"
             )
+        Log.i(TAG, "Loading: $modelPath")
 
-        Log.i(TAG, "Loading model: $modelPath")
+        val eng = createEngine(modelPath)
+        eng.initialize()
 
-        val options = buildOptions(modelPath)
-        inference = LlmInference.createFromOptions(context, options)
+        // Keep a single reusable conversation; reset between events via new conversation
+        conversation = eng.createConversation()
+        engine = eng
         isReady = true
-        Log.i(TAG, "LiteRT-LM ready: $modelPath")
+        Log.i(TAG, "LiteRT-LM Engine ready")
     }
 
     // ── Inference ─────────────────────────────────────────────────────────────
 
     override suspend fun transcribe(request: TranscriptionRequest): TranscriptionResult =
         withContext(Dispatchers.IO) {
-            val llm = checkNotNull(inference) { "LiteRTEngine not prepared" }
+            val eng = checkNotNull(engine) { "LiteRTEngine not prepared" }
 
-            val corrected = llm.generateResponse(PromptBuilder.build(request)).trim()
-            val nouns = runCatching { extractNouns(llm, corrected) }.getOrDefault(emptyList())
+            // Fresh conversation per event — no cross-event memory
+            val conv = eng.createConversation()
 
-            // Per-event memory release
+            val corrected = collect(conv, PromptBuilder.build(request)).trim()
+            val nouns = runCatching {
+                val nounConv = eng.createConversation()
+                val raw = collect(nounConv, PromptBuilder.buildNounExtraction(corrected)).trim()
+                nounConv.close()
+                parseJsonArray(raw)
+            }.getOrDefault(emptyList())
+
+            conv.close()
             System.gc()
 
             TranscriptionResult(
@@ -103,8 +102,10 @@ class LiteRTEngine(private val context: Context) : AIEngine {
         }
 
     override fun release() {
-        inference?.close()
-        inference = null
+        conversation?.close()
+        conversation = null
+        engine?.close()
+        engine = null
         isReady = false
         System.gc()
         Log.d(TAG, "LiteRTEngine released")
@@ -112,27 +113,35 @@ class LiteRTEngine(private val context: Context) : AIEngine {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private fun buildOptions(modelPath: String): LlmInferenceOptions {
-        val base = LlmInferenceOptions.builder()
-            .modelPath(modelPath)
-            .maxTokens(512)
-            .topK(1)
-            .temperature(0.1f)
-
-        // Attempt NNAPI (NPU) delegate; fall back gracefully if the alpha API
-        // doesn't yet expose this method.
-        return runCatching {
-            base.preferNnApi(true).build()
-        }.getOrElse {
-            Log.d(TAG, "NNAPI option unavailable in this litert-lm release; using default")
-            base.build()
+    private suspend fun createEngine(modelPath: String): Engine {
+        // Try NPU → GPU → CPU in order
+        for (backend in preferredBackends()) {
+            runCatching {
+                val cfg = EngineConfig(modelPath = modelPath, backend = backend)
+                return Engine(cfg)
+            }.onFailure {
+                Log.w(TAG, "Backend ${backend::class.simpleName} unavailable: ${it.message}")
+            }
         }
+        // CPU is always available
+        return Engine(EngineConfig(modelPath = modelPath, backend = Backend.CPU()))
     }
 
-    private fun extractNouns(llm: LlmInference, text: String): List<String> {
-        if (text.isBlank()) return emptyList()
-        val raw = llm.generateResponse(PromptBuilder.buildNounExtraction(text)).trim()
-        return parseJsonArray(raw)
+    private fun preferredBackends(): List<Backend> {
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        return listOf(
+            Backend.NPU(nativeLibraryDir = nativeLibDir),
+            Backend.GPU(),
+            Backend.CPU()
+        )
+    }
+
+    private suspend fun collect(conv: Conversation, prompt: String): String {
+        val sb = StringBuilder()
+        conv.sendMessageAsync(prompt)
+            .catch { e -> Log.e(TAG, "Inference error: ${e.message}") }
+            .collect { sb.append(it) }
+        return sb.toString()
     }
 
     private fun parseJsonArray(raw: String): List<String> {

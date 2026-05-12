@@ -71,17 +71,11 @@ dependencies {
     // Experimental — only initialises on AICore-capable devices
     implementation("com.google.android.ai.edge.aicore:aicore:0.0.1-exp03")
 
-    // ── On-device LLM: LiteRT-LM (Gemma 4 fallback) ──────────────────────────
-    // Alpha — https://ai.google.dev/edge/litert/models/gemma
-    implementation("com.google.ai.edge.litert:litert-lm:0.1.0-alpha05")
-
-    // LiteRT runtime + GPU/NPU delegates
-    implementation("com.google.ai.edge.litert:litert:1.0.1")
-    implementation("com.google.ai.edge.litert:litert-gpu:1.0.1")
-    // NNAPI delegate (NPU path) — bundled in litert since 1.0
-
-    // ── MediaPipe Tasks GenAI (stable Gemma inference, used as helper) ────────
-    implementation("com.google.mediapipe:tasks-genai:0.10.22")
+    // ── On-device LLM: LiteRT-LM official Kotlin SDK ─────────────────────────
+    // Stable release — https://ai.google.dev/edge/litert-lm/overview
+    // Provides Engine, EngineConfig, Backend (NPU/GPU/CPU), Conversation APIs.
+    // NPU/GPU/CPU acceleration is handled internally; no separate delegate deps.
+    implementation("com.google.ai.edge.litertlm:litertlm-android:latest.release")
 
     // ── Persistence: Room for custom dictionary ───────────────────────────────
     implementation("androidx.room:room-runtime:2.6.1")

@@ -8,6 +8,7 @@ import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.example.gemmakey.ai.AIEngineFactory
+import com.example.gemmakey.ai.LiteRTEngine
 import java.io.File
 
 /**
@@ -46,21 +47,19 @@ class SetupActivity : AppCompatActivity() {
         sb.appendLine(if (modelPresent) "✓ Gemma model file found" else "✗ Gemma model missing — see instructions below")
 
         if (!modelPresent && !aicoreAvail) {
+            val modelFile = LiteRTEngine(this).MODEL_FILENAME
             sb.appendLine()
-            sb.appendLine("Place gemma-model.bin in:")
-            sb.appendLine("  ${File(getExternalFilesDir(null), "gemma-model.bin").absolutePath}")
-            sb.appendLine("  OR  ${File(filesDir, "models/gemma-model.bin").absolutePath}")
+            sb.appendLine("Place the model file here:")
+            sb.appendLine("  ${File(getExternalFilesDir(null), modelFile).absolutePath}")
+            sb.appendLine("  OR")
+            sb.appendLine("  ${File(filesDir, "models/$modelFile").absolutePath}")
             sb.appendLine()
-            sb.appendLine("Rename your downloaded file to gemma-model.bin")
+            sb.appendLine("Download (Hugging Face):")
+            sb.appendLine("  huggingface.co/litert-community/gemma-4-E2B-it-litert-lm")
+            sb.appendLine("  → download gemma-4-E2B-it-int4.litertlm (~1-2 GB)")
             sb.appendLine()
-            sb.appendLine("Download sources (LiteRT / TFLite format):")
-            sb.appendLine("  Kaggle:  kaggle.com/models/google/gemma-3")
-            sb.appendLine("           (select Framework: LiteRT)")
-            sb.appendLine("  Kaggle:  kaggle.com/models/google/gemma-2")
-            sb.appendLine("           (select Framework: LiteRT)")
-            sb.appendLine("  HuggingFace: search \"gemma-3-1b-it-litert\"")
-            sb.appendLine()
-            sb.appendLine("Recommended: gemma-3-1b-it-litert (~800 MB)")
+            sb.appendLine("The file must keep its original name:")
+            sb.appendLine("  $modelFile")
         }
 
         statusText.text = sb.toString()
@@ -81,10 +80,10 @@ class SetupActivity : AppCompatActivity() {
     }
 
     private fun isModelPresent(): Boolean {
-        val paths = listOf(
-            File(getExternalFilesDir(null), "gemma-model.bin"),
-            File(filesDir, "models/gemma-model.bin")
-        )
-        return paths.any { it.exists() }
+        val name = LiteRTEngine(this).MODEL_FILENAME
+        return listOf(
+            File(getExternalFilesDir(null), name),
+            File(filesDir, "models/$name")
+        ).any { it.exists() }
     }
 }

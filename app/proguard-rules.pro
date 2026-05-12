@@ -1,6 +1,5 @@
-# Keep LiteRT / MediaPipe native entry points
--keep class com.google.mediapipe.** { *; }
--keep class com.google.ai.edge.** { *; }
+# Keep LiteRT-LM and AICore native entry points
+-keep class com.google.ai.edge.litertlm.** { *; }
 -keep class com.google.android.ai.edge.** { *; }
 
 # Room
