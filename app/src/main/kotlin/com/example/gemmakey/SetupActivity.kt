@@ -47,11 +47,20 @@ class SetupActivity : AppCompatActivity() {
 
         if (!modelPresent && !aicoreAvail) {
             sb.appendLine()
-            sb.appendLine("Place gemma4e2b.bin in:")
-            sb.appendLine("  ${File(getExternalFilesDir(null), "gemma4e2b.bin").absolutePath}")
-            sb.appendLine("  OR  ${File(filesDir, "models/gemma4e2b.bin").absolutePath}")
+            sb.appendLine("Place gemma-model.bin in:")
+            sb.appendLine("  ${File(getExternalFilesDir(null), "gemma-model.bin").absolutePath}")
+            sb.appendLine("  OR  ${File(filesDir, "models/gemma-model.bin").absolutePath}")
             sb.appendLine()
-            sb.appendLine("Download from: https://ai.google.dev/edge/litert/models/gemma")
+            sb.appendLine("Rename your downloaded file to gemma-model.bin")
+            sb.appendLine()
+            sb.appendLine("Download sources (LiteRT / TFLite format):")
+            sb.appendLine("  Kaggle:  kaggle.com/models/google/gemma-3")
+            sb.appendLine("           (select Framework: LiteRT)")
+            sb.appendLine("  Kaggle:  kaggle.com/models/google/gemma-2")
+            sb.appendLine("           (select Framework: LiteRT)")
+            sb.appendLine("  HuggingFace: search \"gemma-3-1b-it-litert\"")
+            sb.appendLine()
+            sb.appendLine("Recommended: gemma-3-1b-it-litert (~800 MB)")
         }
 
         statusText.text = sb.toString()
@@ -73,8 +82,8 @@ class SetupActivity : AppCompatActivity() {
 
     private fun isModelPresent(): Boolean {
         val paths = listOf(
-            File(getExternalFilesDir(null), "gemma4e2b.bin"),
-            File(filesDir, "models/gemma4e2b.bin")
+            File(getExternalFilesDir(null), "gemma-model.bin"),
+            File(filesDir, "models/gemma-model.bin")
         )
         return paths.any { it.exists() }
     }

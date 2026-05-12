@@ -12,35 +12,45 @@ import java.io.File
 // Primary API surface used here:
 //   LlmInference          — inference session
 //   LlmInferenceOptions   — builder for model path, tokens, accelerator
-//
-// If the library is not yet published to mavenCentral under the GA package,
-// replace the implementation block with the MediaPipe Tasks GenAI shim below.
 import com.google.ai.edge.litert.lm.LlmInference
 import com.google.ai.edge.litert.lm.LlmInferenceOptions
 
 /**
- * Runs Gemma 4 e2b (or any LiteRT-LM–compatible model) fully on-device.
+ * Runs a LiteRT-compatible Gemma model fully on-device.
  *
- * ## Model placement
- * Place the `.bin` model file at one of (probed in order):
- *   1. `<external-files-dir>/gemma4e2b.bin`
- *   2. `<internal-files-dir>/models/gemma4e2b.bin`
+ * ## Supported model files
+ * Any of the following (place one in a candidate path below):
+ *   • gemma-3-1b-it-litert.bin    ← recommended for most phones (~800 MB)
+ *   • gemma-3-4b-it-litert.bin    ← better quality, needs ~4 GB RAM
+ *   • gemma-2-2b-it-litert.bin    ← well-tested alternative
+ *
+ * ## Where to download
+ *   1. Kaggle — official Google uploads:
+ *        kaggle.com/models/google/gemma-3  (select LiteRT / TFLite variant)
+ *        kaggle.com/models/google/gemma-2  (select LiteRT / TFLite variant)
+ *   2. Hugging Face — search "gemma litert" or "gemma tflite":
+ *        huggingface.co/google/gemma-3-1b-it-litert
+ *        huggingface.co/google/gemma-2-2b-it-litert
+ *   3. Google AI Edge GitHub (ai-edge-torch) — conversion tools and links.
+ *
+ * ## File placement (probed in order)
+ *   1. <external-files-dir>/gemma-model.bin
+ *   2. <internal-files-dir>/models/gemma-model.bin
+ *
+ * Rename your downloaded file to "gemma-model.bin" or update [MODEL_FILENAME].
  *
  * ## Acceleration hierarchy
- *   1. NNAPI (Android Neural Networks API) → exposes NPU/DSP on Qualcomm,
- *      MediaTek, Samsung Exynos, Google Tensor, and other modern SoCs.
- *   2. GPU delegate — falls back automatically inside LiteRT-LM when NNAPI
- *      is unavailable or returns an error.
- *   3. CPU — final fallback guaranteed on all devices.
- *
- * LiteRT-LM selects the best available tier at [prepare] time and logs the
- * chosen delegate.
+ *   1. NNAPI → routes to on-chip NPU/DSP (Qualcomm Hexagon, MediaTek APU,
+ *      Samsung Exynos NPU, Google Tensor Edge TPU, etc.)
+ *   2. GPU delegate — automatic fallback when NNAPI is unavailable.
+ *   3. CPU XNNPACK — final guaranteed fallback on all devices.
  */
 class LiteRTEngine(private val context: Context) : AIEngine {
 
     private val TAG = "LiteRTEngine"
 
-    private val MODEL_FILENAME = "gemma4e2b.bin"
+    // Update this name to match your downloaded file, e.g. "gemma-3-1b-it-litert.bin"
+    private val MODEL_FILENAME = "gemma-model.bin"
 
     private val candidatePaths: List<String>
         get() = listOf(
@@ -59,17 +69,18 @@ class LiteRTEngine(private val context: Context) : AIEngine {
         val modelPath = candidatePaths.firstOrNull { File(it).exists() }
             ?: throw IllegalStateException(
                 "Gemma model not found. Place $MODEL_FILENAME in:\n" +
-                        candidatePaths.joinToString("\n")
+                        candidatePaths.joinToString("\n") +
+                        "\n\nDownload from:\n" +
+                        "  Kaggle:       kaggle.com/models/google/gemma-3\n" +
+                        "  Hugging Face: huggingface.co/google/gemma-3-1b-it-litert"
             )
 
         Log.i(TAG, "Loading model: $modelPath")
 
-        // Build options — accelerator preference is NNAPI (NPU/DSP).
-        // LiteRT-LM will silently fall back to GPU → CPU on unsupported hardware.
         val options = buildOptions(modelPath)
         inference = LlmInference.createFromOptions(context, options)
         isReady = true
-        Log.i(TAG, "LiteRT-LM / Gemma 4 e2b ready")
+        Log.i(TAG, "LiteRT-LM ready: $modelPath")
     }
 
     // ── Inference ─────────────────────────────────────────────────────────────
@@ -108,13 +119,12 @@ class LiteRTEngine(private val context: Context) : AIEngine {
             .topK(1)
             .temperature(0.1f)
 
-        // Attempt to enable NNAPI (NPU) delegate.
-        // The exact method name depends on the alpha release; guard with runCatching.
+        // Attempt NNAPI (NPU) delegate; fall back gracefully if the alpha API
+        // doesn't yet expose this method.
         return runCatching {
             base.preferNnApi(true).build()
         }.getOrElse {
-            // Older alpha without preferNnApi — rely on default GPU path
-            Log.d(TAG, "NNAPI option not available in this litert-lm release; using default accelerator")
+            Log.d(TAG, "NNAPI option unavailable in this litert-lm release; using default")
             base.build()
         }
     }
