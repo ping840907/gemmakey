@@ -4,17 +4,17 @@ import android.content.Context
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Conversation
+import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import java.io.File
 
 /**
- * On-device Gemma 4 E2B inference via the official LiteRT-LM Kotlin SDK.
+ * On-device Gemma inference via the official LiteRT-LM Kotlin SDK (v0.11.0).
  *
  * ## Model file
  * Format : `.litertlm`
@@ -28,11 +28,9 @@ import java.io.File
  *   2. <internal-files-dir>/models/gemma-4-E2B-it-int4.litertlm
  *
  * ## Acceleration
- *   Backend.NPU  → Android NNAPI, routes to on-chip NPU/DSP
+ *   Backend.NPU  → Android NNAPI / on-chip NPU/DSP
  *   Backend.GPU  → OpenCL/Vulkan GPU path (auto-fallback)
- *   Backend.CPU  → XNNPACK CPU path (final fallback)
- *
- * The engine tries NPU first; falls back to GPU, then CPU on error.
+ *   Backend.CPU  → XNNPACK CPU path (always available)
  */
 class LiteRTEngine(private val context: Context) : AIEngine {
 
@@ -47,7 +45,13 @@ class LiteRTEngine(private val context: Context) : AIEngine {
         )
 
     private var engine: Engine? = null
-    private var conversation: Conversation? = null
+
+    // ConversationConfig shared across inference calls; fresh Conversation per request.
+    private val conversationConfig = ConversationConfig(
+        temperature = 0.1f,
+        topK = 1,
+        maxTokens = 512
+    )
 
     override var isReady: Boolean = false
         private set
@@ -67,8 +71,6 @@ class LiteRTEngine(private val context: Context) : AIEngine {
         val eng = createEngine(modelPath)
         eng.initialize()
 
-        // Keep a single reusable conversation; reset between events via new conversation
-        conversation = eng.createConversation()
         engine = eng
         isReady = true
         Log.i(TAG, "LiteRT-LM Engine ready")
@@ -80,16 +82,19 @@ class LiteRTEngine(private val context: Context) : AIEngine {
         withContext(Dispatchers.IO) {
             val eng = checkNotNull(engine) { "LiteRTEngine not prepared" }
 
-            // Fresh conversation per event — no cross-event memory
-            val conv = eng.createConversation()
+            // Fresh conversation per event — no cross-event memory leakage
+            val conv = eng.createConversation(conversationConfig)
+            val corrected = runCatching {
+                collect(conv, PromptBuilder.build(request)).trim()
+            }.onFailure { Log.e(TAG, "Transcription inference failed: ${it.message}") }
+             .getOrDefault("")
 
-            val corrected = collect(conv, PromptBuilder.build(request)).trim()
-            val nouns = runCatching {
-                val nounConv = eng.createConversation()
+            val nouns = if (corrected.isNotBlank()) runCatching {
+                val nounConv = eng.createConversation(conversationConfig)
                 val raw = collect(nounConv, PromptBuilder.buildNounExtraction(corrected)).trim()
                 nounConv.close()
                 parseJsonArray(raw)
-            }.getOrDefault(emptyList())
+            }.getOrDefault(emptyList()) else emptyList()
 
             conv.close()
             System.gc()
@@ -102,8 +107,6 @@ class LiteRTEngine(private val context: Context) : AIEngine {
         }
 
     override fun release() {
-        conversation?.close()
-        conversation = null
         engine?.close()
         engine = null
         isReady = false
@@ -113,34 +116,29 @@ class LiteRTEngine(private val context: Context) : AIEngine {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private suspend fun createEngine(modelPath: String): Engine {
-        // Try NPU → GPU → CPU in order
-        for (backend in preferredBackends()) {
+    private fun createEngine(modelPath: String): Engine {
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        // Try NPU → GPU → CPU; Engine constructor throws if a backend is unavailable.
+        for (backend in listOf(
+            Backend.NPU(nativeLibraryDir = nativeLibDir),
+            Backend.GPU(),
+            Backend.CPU()
+        )) {
             runCatching {
-                val cfg = EngineConfig(modelPath = modelPath, backend = backend)
-                return Engine(cfg)
+                return Engine(EngineConfig(modelPath = modelPath, backend = backend))
             }.onFailure {
                 Log.w(TAG, "Backend ${backend::class.simpleName} unavailable: ${it.message}")
             }
         }
-        // CPU is always available
+        // CPU is guaranteed to succeed on any device.
         return Engine(EngineConfig(modelPath = modelPath, backend = Backend.CPU()))
-    }
-
-    private fun preferredBackends(): List<Backend> {
-        val nativeLibDir = context.applicationInfo.nativeLibraryDir
-        return listOf(
-            Backend.NPU(nativeLibraryDir = nativeLibDir),
-            Backend.GPU(),
-            Backend.CPU()
-        )
     }
 
     private suspend fun collect(conv: Conversation, prompt: String): String {
         val sb = StringBuilder()
         conv.sendMessageAsync(prompt)
-            .catch { e -> Log.e(TAG, "Inference error: ${e.message}") }
-            .collect { sb.append(it) }
+            .catch { e -> Log.e(TAG, "Inference stream error: ${e.message}") }
+            .collect { chunk -> sb.append(chunk) }
         return sb.toString()
     }
 

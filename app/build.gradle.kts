@@ -72,7 +72,7 @@ dependencies {
     // Stable release — https://ai.google.dev/edge/litert-lm/overview
     // Provides Engine, EngineConfig, Backend (NPU/GPU/CPU), Conversation APIs.
     // NPU/GPU/CPU acceleration is handled internally; no separate delegate deps.
-    implementation("com.google.ai.edge.litertlm:litertlm-android:latest.release")
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.11.0")
 
     // ── Persistence: Room for custom dictionary ───────────────────────────────
     implementation("androidx.room:room-runtime:2.6.1")
