@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="background_dark">#1A1A2E</color>
+    <color name="surface_dark">#2A2A4A</color>
+    <color name="accent_purple">#7C7CFF</color>
+    <color name="text_primary">#E0E0E0</color>
+    <color name="text_secondary">#AAAACC</color>
+    <color name="mic_active">#FF4444</color>
+</resources>

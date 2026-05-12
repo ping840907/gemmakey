@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="#1A1A2E"
+    android:padding="8dp">
+
+    <!-- Preview strip: shows the last committed text -->
+    <TextView
+        android:id="@+id/tv_preview"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:minHeight="32dp"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="4dp"
+        android:textColor="#E0E0E0"
+        android:textSize="14sp"
+        android:ellipsize="start"
+        android:singleLine="true"
+        android:background="#2A2A4A"
+        android:layout_marginBottom="4dp"
+        android:hint="..."
+        android:textColorHint="#666688" />
+
+    <!-- Status bar -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingHorizontal="8dp"
+        android:paddingBottom="4dp">
+
+        <TextView
+            android:id="@+id/tv_status"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/status_idle"
+            android:textColor="#AAAACC"
+            android:textSize="12sp" />
+
+        <ProgressBar
+            android:id="@+id/progress_bar"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:visibility="invisible"
+            style="?android:attr/progressBarStyleSmall"
+            android:indeterminateTint="#7C7CFF" />
+    </LinearLayout>
+
+    <!-- Main button row -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:paddingBottom="8dp">
+
+        <!-- Delete key -->
+        <ImageButton
+            android:id="@+id/btn_delete"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:src="@android:drawable/ic_menu_close_clear_cancel"
+            android:background="@drawable/key_bg"
+            android:contentDescription="@string/btn_delete"
+            android:layout_marginEnd="8dp"
+            android:tint="#CCCCCC" />
+
+        <!-- Mic button — primary interaction -->
+        <ImageButton
+            android:id="@+id/btn_mic"
+            android:layout_width="88dp"
+            android:layout_height="88dp"
+            android:src="@android:drawable/ic_btn_speak_now"
+            android:background="@drawable/mic_bg"
+            android:contentDescription="@string/btn_mic"
+            android:scaleType="centerInside"
+            android:padding="16dp" />
+
+        <!-- Enter/Send key -->
+        <ImageButton
+            android:id="@+id/btn_enter"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:src="@android:drawable/ic_menu_send"
+            android:background="@drawable/key_bg"
+            android:contentDescription="@string/btn_enter"
+            android:layout_marginStart="8dp"
+            android:tint="#CCCCCC" />
+
+    </LinearLayout>
+
+</LinearLayout>

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- ── Permissions ─────────────────────────────────────────────────── -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Screen capture via AccessibilityService.takeScreenshot() — no extra permission needed -->
+    <!-- Offline only: no INTERNET permission declared intentionally -->
+
+    <uses-feature android:name="android.hardware.microphone" android:required="true" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@drawable/ic_keyboard"
+        android:label="@string/app_name"
+        android:roundIcon="@drawable/ic_keyboard"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.GemmaKey"
+        android:extractNativeLibs="true">
+
+        <!-- ── IME Service ─────────────────────────────────────────────── -->
+        <service
+            android:name=".GemmaKeyIMEService"
+            android:label="@string/ime_name"
+            android:permission="android.permission.BIND_INPUT_METHOD"
+            android:exported="true"
+            android:foregroundServiceType="microphone">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/method" />
+        </service>
+
+        <!-- ── Accessibility Service ───────────────────────────────────── -->
+        <service
+            android:name=".GemmaAccessibilityService"
+            android:label="@string/accessibility_service_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service" />
+        </service>
+
+        <!-- ── Setup Activity ──────────────────────────────────────────── -->
+        <activity
+            android:name=".SetupActivity"
+            android:exported="true"
+            android:label="@string/setup_title">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>
