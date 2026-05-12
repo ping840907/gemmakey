@@ -2,16 +2,15 @@ package com.example.gemmakey.ai
 
 import android.content.Context
 import android.util.Log
-import com.google.android.ai.edge.aicore.GenerativeModel
-import com.google.android.ai.edge.aicore.GenerativeException
 import com.google.android.ai.edge.aicore.DownloadCallback
+import com.google.android.ai.edge.aicore.DownloadConfig
+import com.google.android.ai.edge.aicore.GenerativeAIException
+import com.google.android.ai.edge.aicore.GenerativeModel
 import com.google.android.ai.edge.aicore.generationConfig
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /**
  * AICore-backed engine that routes inference through Gemini Nano.
@@ -30,16 +29,31 @@ class AICoreEngine(private val context: Context) : AIEngine {
 
     override suspend fun prepare() = withContext(Dispatchers.IO) {
         try {
+            val appContext = context
             val config = generationConfig {
-                this.context = this@AICoreEngine.context
-                temperature = 0.1f   // Low temperature → deterministic / factual
+                context = appContext
+                temperature = 0.1f
                 topK = 1
                 maxOutputTokens = 512
             }
-            val gm = GenerativeModel(generationConfig = config)
+            val downloadConfig = DownloadConfig(
+                downloadCallback = object : DownloadCallback {
+                    override fun onDownloadStarted(bytesToDownload: Long) {
+                        Log.d(TAG, "Model download started: $bytesToDownload bytes")
+                    }
+                    override fun onDownloadProgress(totalBytesDownloaded: Long) {}
+                    override fun onDownloadCompleted() {
+                        Log.d(TAG, "Model download complete")
+                    }
+                    override fun onDownloadFailed(failureStatus: String, e: GenerativeAIException) {
+                        Log.e(TAG, "Model download failed [$failureStatus]: ${e.message}")
+                    }
+                }
+            )
 
-            // Ensure the on-device model weights are available
-            ensureModelDownloaded(gm)
+            val gm = GenerativeModel(generationConfig = config, downloadConfig = downloadConfig)
+            // Warms up the inference engine; blocks until model weights are ready.
+            gm.prepareInferenceEngine()
 
             model = gm
             isReady = true
@@ -50,36 +64,13 @@ class AICoreEngine(private val context: Context) : AIEngine {
         }
     }
 
-    /** Blocks until AICore reports the model is fully available locally. */
-    private suspend fun ensureModelDownloaded(gm: GenerativeModel) =
-        suspendCancellableCoroutine { cont ->
-            gm.downloadAiCoreModel(object : DownloadCallback {
-                override fun onDownloadStarted(bytesTotal: Long) {
-                    Log.d(TAG, "Model download started: $bytesTotal bytes")
-                }
-                override fun onDownloadProgress(bytesDownloaded: Long, bytesTotal: Long) {}
-                override fun onDownloadCompleted() {
-                    Log.d(TAG, "Model download complete")
-                    if (cont.isActive) cont.resume(Unit)
-                }
-                override fun onDownloadFailed(e: GenerativeException) {
-                    Log.e(TAG, "Model download failed: ${e.message}")
-                    // Model may already be cached — treat as non-fatal and continue
-                    if (cont.isActive) cont.resume(Unit)
-                }
-            })
-        }
-
     override suspend fun transcribe(request: TranscriptionRequest): TranscriptionResult =
         withContext(Dispatchers.IO) {
             checkNotNull(model) { "AICoreEngine not prepared" }
 
-            val correctionPrompt = PromptBuilder.build(request)
-            val corrected = runGeneration(correctionPrompt).trim()
-
+            val corrected = runGeneration(PromptBuilder.build(request)).trim()
             val nouns = extractNouns(corrected)
 
-            // Explicitly help GC reclaim the prompt strings
             System.gc()
 
             TranscriptionResult(
@@ -89,24 +80,13 @@ class AICoreEngine(private val context: Context) : AIEngine {
             )
         }
 
-    private suspend fun runGeneration(prompt: String): String =
-        suspendCancellableCoroutine { cont ->
-            model!!.generateContentAsync(
-                prompt,
-                object : com.google.android.ai.edge.aicore.GenerateContentCallback {
-                    private val sb = StringBuilder()
-                    override fun onResponse(response: com.google.android.ai.edge.aicore.GenerateContentResponse) {
-                        response.text?.let { sb.append(it) }
-                    }
-                    override fun onComplete() {
-                        if (cont.isActive) cont.resume(sb.toString())
-                    }
-                    override fun onError(e: GenerativeException) {
-                        if (cont.isActive) cont.resumeWithException(e)
-                    }
-                }
-            )
-        }
+    private suspend fun runGeneration(prompt: String): String {
+        val sb = StringBuilder()
+        model!!.generateContentStream(prompt)
+            .catch { e -> Log.e(TAG, "Generation error: ${e.message}") }
+            .collect { response -> response.text?.let { sb.append(it) } }
+        return sb.toString()
+    }
 
     private suspend fun extractNouns(text: String): List<String> {
         if (text.isBlank()) return emptyList()
@@ -131,6 +111,7 @@ class AICoreEngine(private val context: Context) : AIEngine {
     }
 
     override fun release() {
+        model?.close()
         model = null
         isReady = false
         System.gc()
