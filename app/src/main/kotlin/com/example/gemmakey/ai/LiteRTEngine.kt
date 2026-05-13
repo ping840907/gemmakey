@@ -38,6 +38,10 @@ class LiteRTEngine(private val context: Context) : AIEngine {
         const val MODEL_FILENAME = "gemma-4-E2B-it-int4.litertlm"
     }
 
+    // Gemma 4 E2B is natively multimodal (text + image + audio).
+    // Image input via the LiteRT-LM Contents API — falls back to text-only on error.
+    override val supportsVision: Boolean = true
+
     private val TAG = "LiteRTEngine"
 
     private val candidatePaths: List<String>
@@ -86,6 +90,8 @@ class LiteRTEngine(private val context: Context) : AIEngine {
 
             // Fresh conversation per event — no cross-event memory leakage.
             // use{} ensures close() even if an exception escapes runCatching.
+            // TODO: when LiteRT-LM Contents API is confirmed for v0.11.0, pass
+            //       request.screenBitmap via Content.image() for native vision input.
             val corrected = eng.createConversation(conversationConfig).use { conv ->
                 runCatching { collect(conv, PromptBuilder.build(request)).trim() }
                     .onFailure { Log.e(TAG, "Transcription inference failed: ${it.message}") }

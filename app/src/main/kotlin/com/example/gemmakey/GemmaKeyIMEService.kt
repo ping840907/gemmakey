@@ -16,7 +16,6 @@ import com.example.gemmakey.ai.AIEngine
 import com.example.gemmakey.ai.AIEngineFactory
 import com.example.gemmakey.ai.TranscriptionRequest
 import com.example.gemmakey.dict.CustomDictionary
-import com.example.gemmakey.screen.ScreenContextProvider
 import kotlinx.coroutines.*
 import kotlin.coroutines.resume
 
@@ -45,6 +44,7 @@ class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardAct
 
     private var speechRecognizer: SpeechRecognizer? = null
     private var voiceJob: Job? = null
+    private val modalityCollector = ModalityCollector()
 
     // ── Service lifecycle ─────────────────────────────────────────────────────
 
@@ -57,6 +57,7 @@ class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardAct
 
     override fun onDestroy() {
         scope.cancel()
+        modalityCollector.cancel()
         aiEngine?.release()
         speechRecognizer?.destroy()
         super.onDestroy()
@@ -125,10 +126,12 @@ class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardAct
             return
         }
         keyboardViewManager.setState(KeyboardViewManager.State.RECORDING)
-        // Grab a screenshot for context before speech begins
+        // Request screenshot and start collecting screen text in parallel with speech.
+        // By the time ASR finishes, context is already ready — zero net latency.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             GemmaAccessibilityService.instance?.requestScreenshot()
         }
+        modalityCollector.startCollection(scope)
         // Launch the full pipeline; SpeechRecognizer starts listening immediately.
         voiceJob = scope.launch {
             try {
@@ -171,29 +174,30 @@ class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardAct
         }
         Log.d(TAG, "ASR result: $rawAsr")
 
-        // 2. Gather screen context (collected in background during speech).
-        val screenCtx = withContext(Dispatchers.IO) { ScreenContextProvider.capture() }
+        // 2. Await context collected in parallel during speech — typically already done.
+        val engine = aiEngine ?: run {
+            keyboardViewManager.setState(
+                KeyboardViewManager.State.ERROR,
+                getString(R.string.status_model_missing)
+            )
+            modalityCollector.cancel()
+            return
+        }
+        val ctx = modalityCollector.awaitContext(engine.supportsVision)
         val hints = withContext(Dispatchers.IO) { dictionary.getHints() }
+        Log.d(TAG, "Modality: ${ctx.state} | screenText=${ctx.screenText.length}ch | bitmap=${ctx.screenshot != null}")
 
         // 3. AI correction.
         keyboardViewManager.setState(
             KeyboardViewManager.State.PROCESSING,
             getString(R.string.status_correcting)
         )
-        val engine = aiEngine ?: run {
-            keyboardViewManager.setState(
-                KeyboardViewManager.State.ERROR,
-                getString(R.string.status_model_missing)
-            )
-            screenCtx.screenshot?.recycle()
-            return
-        }
         val result = withContext(Dispatchers.IO) {
             engine.transcribe(
                 TranscriptionRequest(
                     rawAsr = rawAsr,
-                    screenText = screenCtx.text,
-                    screenBitmap = screenCtx.screenshot,
+                    screenText = ctx.screenText,
+                    screenBitmap = ctx.screenshot,
                     dictionaryHints = hints
                 )
             )
@@ -211,7 +215,7 @@ class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardAct
             withContext(Dispatchers.IO) { dictionary.recordNouns(result.detectedNouns) }
         }
 
-        screenCtx.screenshot?.recycle()
+        modalityCollector.releaseBitmap(ctx)
         keyboardViewManager.setState(KeyboardViewManager.State.IDLE)
     }
 

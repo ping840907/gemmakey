@@ -20,6 +20,9 @@ import org.json.JSONArray
  */
 class AICoreEngine(private val context: Context) : AIEngine {
 
+    // AICore/Gemini Nano is text-only in the current experimental SDK (0.0.1-exp03).
+    override val supportsVision: Boolean = false
+
     private val TAG = "AICoreEngine"
 
     private var model: GenerativeModel? = null

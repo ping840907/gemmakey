@@ -35,6 +35,9 @@ interface AIEngine {
     /** True once the model is loaded and ready. */
     val isReady: Boolean
 
+    /** True if the engine accepts image input in [TranscriptionRequest.screenBitmap]. */
+    val supportsVision: Boolean
+
     /** Prepare the model. Call once before [transcribe]. */
     suspend fun prepare()
 
