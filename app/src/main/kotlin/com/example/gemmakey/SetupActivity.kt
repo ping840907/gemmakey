@@ -47,7 +47,7 @@ class SetupActivity : AppCompatActivity() {
         sb.appendLine(if (modelPresent) "✓ Gemma model file found" else "✗ Gemma model missing — see instructions below")
 
         if (!modelPresent && !aicoreAvail) {
-            val modelFile = LiteRTEngine(this).MODEL_FILENAME
+            val modelFile = LiteRTEngine.MODEL_FILENAME
             sb.appendLine()
             sb.appendLine("Place the model file here:")
             sb.appendLine("  ${File(getExternalFilesDir(null), modelFile).absolutePath}")
@@ -80,7 +80,7 @@ class SetupActivity : AppCompatActivity() {
     }
 
     private fun isModelPresent(): Boolean {
-        val name = LiteRTEngine(this).MODEL_FILENAME
+        val name = LiteRTEngine.MODEL_FILENAME
         return listOf(
             File(getExternalFilesDir(null), name),
             File(filesDir, "models/$name")

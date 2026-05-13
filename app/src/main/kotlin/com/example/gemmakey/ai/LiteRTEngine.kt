@@ -34,9 +34,11 @@ import java.io.File
  */
 class LiteRTEngine(private val context: Context) : AIEngine {
 
-    private val TAG = "LiteRTEngine"
+    companion object {
+        const val MODEL_FILENAME = "gemma-4-E2B-it-int4.litertlm"
+    }
 
-    val MODEL_FILENAME = "gemma-4-E2B-it-int4.litertlm"
+    private val TAG = "LiteRTEngine"
 
     private val candidatePaths: List<String>
         get() = listOf(
@@ -82,21 +84,24 @@ class LiteRTEngine(private val context: Context) : AIEngine {
         withContext(Dispatchers.IO) {
             val eng = checkNotNull(engine) { "LiteRTEngine not prepared" }
 
-            // Fresh conversation per event — no cross-event memory leakage
-            val conv = eng.createConversation(conversationConfig)
-            val corrected = runCatching {
-                collect(conv, PromptBuilder.build(request)).trim()
-            }.onFailure { Log.e(TAG, "Transcription inference failed: ${it.message}") }
-             .getOrDefault("")
+            // Fresh conversation per event — no cross-event memory leakage.
+            // use{} ensures close() even if an exception escapes runCatching.
+            val corrected = eng.createConversation(conversationConfig).use { conv ->
+                runCatching { collect(conv, PromptBuilder.build(request)).trim() }
+                    .onFailure { Log.e(TAG, "Transcription inference failed: ${it.message}") }
+                    .getOrDefault("")
+            }
 
-            val nouns = if (corrected.isNotBlank()) runCatching {
-                val nounConv = eng.createConversation(conversationConfig)
-                val raw = collect(nounConv, PromptBuilder.buildNounExtraction(corrected)).trim()
-                nounConv.close()
-                parseJsonArray(raw)
-            }.getOrDefault(emptyList()) else emptyList()
+            val nouns = if (corrected.isNotBlank()) {
+                eng.createConversation(conversationConfig).use { nounConv ->
+                    runCatching {
+                        parseJsonArray(
+                            collect(nounConv, PromptBuilder.buildNounExtraction(corrected)).trim()
+                        )
+                    }.getOrDefault(emptyList())
+                }
+            } else emptyList()
 
-            conv.close()
             System.gc()
 
             TranscriptionResult(

@@ -66,10 +66,10 @@ class AICoreEngine(private val context: Context) : AIEngine {
 
     override suspend fun transcribe(request: TranscriptionRequest): TranscriptionResult =
         withContext(Dispatchers.IO) {
-            checkNotNull(model) { "AICoreEngine not prepared" }
+            val m = checkNotNull(model) { "AICoreEngine not prepared" }
 
-            val corrected = runGeneration(PromptBuilder.build(request)).trim()
-            val nouns = extractNouns(corrected)
+            val corrected = runGeneration(m, PromptBuilder.build(request)).trim()
+            val nouns = extractNouns(m, corrected)
 
             System.gc()
 
@@ -80,18 +80,18 @@ class AICoreEngine(private val context: Context) : AIEngine {
             )
         }
 
-    private suspend fun runGeneration(prompt: String): String {
+    private suspend fun runGeneration(m: GenerativeModel, prompt: String): String {
         val sb = StringBuilder()
-        model!!.generateContentStream(prompt)
+        m.generateContentStream(prompt)
             .catch { e -> Log.e(TAG, "Generation error: ${e.message}") }
             .collect { response -> response.text?.let { sb.append(it) } }
         return sb.toString()
     }
 
-    private suspend fun extractNouns(text: String): List<String> {
+    private suspend fun extractNouns(m: GenerativeModel, text: String): List<String> {
         if (text.isBlank()) return emptyList()
         return try {
-            val raw = runGeneration(PromptBuilder.buildNounExtraction(text)).trim()
+            val raw = runGeneration(m, PromptBuilder.buildNounExtraction(text)).trim()
             parseJsonArray(raw)
         } catch (_: Exception) {
             emptyList()

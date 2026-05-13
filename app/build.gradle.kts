@@ -89,6 +89,5 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
     implementation("androidx.lifecycle:lifecycle-service:2.8.4")
 
-    // ── JSON (for dictionary noun extraction) ─────────────────────────────────
-    implementation("org.json:json:20231013")
+    // org.json is part of the Android SDK; no separate dependency needed.
 }

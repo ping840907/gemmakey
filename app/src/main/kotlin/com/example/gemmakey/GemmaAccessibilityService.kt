@@ -130,7 +130,9 @@ class GemmaAccessibilityService : AccessibilityService() {
         node.text?.takeIf { it.isNotBlank() }?.let { sb.appendLine(it) }
         node.contentDescription?.takeIf { it.isNotBlank() }?.let { sb.appendLine(it) }
         for (i in 0 until node.childCount) {
-            collectText(node.getChild(i), sb, depth + 1)
+            val child = node.getChild(i) ?: continue
+            collectText(child, sb, depth + 1)
+            child.recycle()   // each getChild() vends a new reference that must be recycled
         }
     }
 }

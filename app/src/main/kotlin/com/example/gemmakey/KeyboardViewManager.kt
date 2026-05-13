@@ -3,15 +3,12 @@ package com.example.gemmakey
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
-import android.graphics.drawable.GradientDrawable
-import android.os.Build
 import android.view.LayoutInflater
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.ImageButton
 import android.widget.ProgressBar
 import android.widget.TextView
-import androidx.annotation.RequiresApi
 
 /**
  * Inflates and manages the keyboard UI.
