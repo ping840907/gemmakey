@@ -64,9 +64,9 @@ android {
 }
 
 dependencies {
-    // ── On-device LLM: Google AI Edge AICore (Gemini Nano, Pixel 8+) ──────────
-    // Experimental — only initialises on AICore-capable devices
-    implementation("com.google.android.ai.edge.aicore:aicore:0.0.1-exp03")
+    // ── On-device LLM: ML Kit GenAI Prompt API (Gemini Nano via AICore) ─────────
+    // Official SDK used by Google AI Edge Gallery — replaces the old aicore:0.0.1-exp03
+    implementation("com.google.mlkit:genai-prompt:1.0.0-beta2")
 
     // ── On-device LLM: LiteRT-LM official Kotlin SDK ─────────────────────────
     // Stable release — https://ai.google.dev/edge/litert-lm/overview

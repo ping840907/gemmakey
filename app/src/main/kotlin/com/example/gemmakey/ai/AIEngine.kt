@@ -110,45 +110,66 @@ object AIEngineFactory {
 internal object PromptBuilder {
 
     /**
-     * Constructs the zero-shot correction prompt sent to either engine.
+     * Persistent system instruction set on [ConversationConfig.systemInstruction] for
+     * engines that support it (LiteRTEngine).  For engines that do not (AICoreEngine),
+     * it is prepended to the user message by [build].
      *
-     * When [TranscriptionRequest.screenBitmap] is present, a compact visual
-     * descriptor (theme, brightness, dominant hue) is appended as structured
-     * text.  If the SDK exposes a native image overload, [LiteRTEngine] will
-     * additionally inject the full bitmap via the reflection probe before
-     * calling this prompt.
+     * Rules: audio is primary; screen/image/dictionary are auxiliary context only and
+     * must not appear in the output.
+     */
+    const val SYSTEM_INSTRUCTION = """You are a strict on-device speech transcription assistant.
+
+PRIMARY INPUT: The user's spoken audio. Your sole task is to transcribe and correct it.
+AUXILIARY CONTEXT (screen text, screenshot, dictionary hints): Use these ONLY to resolve ambiguous words, homophones, or rare proper nouns. They must NOT appear in your output.
+
+OUTPUT RULES:
+- Output ONLY the corrected transcription of what was spoken.
+- Do not quote, explain, summarise, or add any text that was not spoken.
+- Do not reproduce screen content, image descriptions, app names, or dictionary terms in the output.
+- Fix ASR artefacts and filler words.
+- Preserve the speaker's language (Chinese, English, code-switched) exactly as spoken."""
+
+    /**
+     * Full standalone prompt for engines without [ConversationConfig.systemInstruction]
+     * support (e.g. AICoreEngine).  Embeds [SYSTEM_INSTRUCTION] inline.
      */
     fun build(request: TranscriptionRequest): String {
         val dictSection = if (request.dictionaryHints.isNotEmpty()) {
-            "\nKnown specialised terms (use exact spelling if applicable):\n" +
-                    request.dictionaryHints.joinToString(", ")
+            "\n[Dictionary hints — do not reproduce: ${request.dictionaryHints.joinToString(", ")}]"
         } else ""
 
         val screenSection = if (request.screenText.isNotBlank()) {
-            "\nCurrent screen text (context only):\n${request.screenText.take(800)}"
+            "\n[Screen text — do not reproduce: ${request.screenText.take(800)}]"
         } else ""
 
         val visualSection = request.screenBitmap?.let { bmp ->
-            "\nScreen visual context: ${describeScreenshot(bmp)}"
+            "\n[Screen visual: ${describeScreenshot(bmp)} — do not reproduce]"
         } ?: ""
 
-        return """
-You are a strict transcription correction assistant operating fully offline.
-
-TASK: Given a raw speech-recognition result, output the single best corrected text the user intended to type.
-
-RULES:
-- Output ONLY the corrected text — no explanation, no quotes, no preamble.
-- Base corrections on context clues from the screen and the known-terms list.
-- Fix homophones, filler words, and ASR artefacts.
-- Preserve the speaker's language (Chinese, English, mixed) exactly as spoken.
-- Do NOT add information not present in the raw ASR.
+        return """$SYSTEM_INSTRUCTION
 $dictSection$screenSection$visualSection
 
-Raw ASR result:
-${request.rawAsr}
+Raw ASR input: ${request.rawAsr}
 
-Corrected text:""".trimIndent()
+Corrected transcription:""".trimIndent()
+    }
+
+    /**
+     * Data-only user message for engines that receive [SYSTEM_INSTRUCTION] via
+     * [ConversationConfig.systemInstruction] (LiteRTEngine).
+     * Contains only the input data — rules are already set at the conversation level.
+     */
+    fun buildMessage(request: TranscriptionRequest): String {
+        val parts = mutableListOf<String>()
+        if (request.dictionaryHints.isNotEmpty())
+            parts.add("[Dictionary: ${request.dictionaryHints.joinToString(", ")}]")
+        if (request.screenText.isNotBlank())
+            parts.add("[Screen text: ${request.screenText.take(800)}]")
+        request.screenBitmap?.let {
+            parts.add("[Screen visual: ${describeScreenshot(it)}]")
+        }
+        parts.add("Audio input: ${request.rawAsr}")
+        return parts.joinToString("\n")
     }
 
     /**
@@ -196,9 +217,9 @@ Corrected text:""".trimIndent()
      */
     fun buildAudioContext(screenText: String, bitmap: Bitmap?, hints: List<String>): String {
         val parts = mutableListOf<String>()
-        if (screenText.isNotBlank()) parts.add("Screen context:\n${screenText.take(400)}")
-        bitmap?.let { parts.add("Visual: ${describeScreenshot(it)}") }
-        if (hints.isNotEmpty()) parts.add("Known terms: ${hints.joinToString(", ")}")
+        if (screenText.isNotBlank()) parts.add("[Screen text — do not reproduce: ${screenText.take(400)}]")
+        bitmap?.let { parts.add("[Screen visual: ${describeScreenshot(it)} — do not reproduce]") }
+        if (hints.isNotEmpty()) parts.add("[Dictionary — do not reproduce: ${hints.joinToString(", ")}]")
         return parts.joinToString("\n")
     }
 

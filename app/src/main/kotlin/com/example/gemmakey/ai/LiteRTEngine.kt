@@ -4,19 +4,25 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
+import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.MessageCallback
+import com.google.ai.edge.litertlm.SamplerConfig
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import java.io.ByteArrayOutputStream
 import java.io.File
-import java.lang.reflect.Method
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.coroutines.resume
 
 /**
  * On-device Gemma inference via the official LiteRT-LM Kotlin SDK (v0.11.0).
@@ -24,39 +30,31 @@ import java.nio.ByteOrder
  * ## Model file
  * Format : `.litertlm`
  * Source  : Hugging Face — litert-community/gemma-4-E2B-it-litert-lm
- *
- * Recommended variant : `gemma-4-E2B-it-int4.litertlm`  (~1–2 GB)
+ * Variant : `gemma-4-E2B-it-int4.litertlm` (~1–2 GB)
  *
  * ## Placement (probed in order)
  *   1. <external-files-dir>/gemma-4-E2B-it-int4.litertlm
  *   2. <internal-files-dir>/models/gemma-4-E2B-it-int4.litertlm
  *
- * ## Acceleration
- *   Backend.NPU  → Android NNAPI / on-chip NPU/DSP
- *   Backend.GPU  → OpenCL/Vulkan GPU path (auto-fallback)
- *   Backend.CPU  → XNNPACK CPU path (always available)
+ * ## Acceleration fallback order
+ *   NPU (+vision+audio) → NPU (+vision) → NPU → GPU (+vision+audio) → … → CPU
  *
- * ## Multimodal support
- *   Both image and audio APIs are probed via reflection at runtime.
- *   When the SDK exposes the expected overloads they activate automatically;
- *   otherwise the engine falls back to text-only without any code change.
+ * ## System instruction
+ *   Set on [ConversationConfig.systemInstruction] so every conversation starts
+ *   with the rule: audio is primary, context inputs must not appear in output.
  */
 class LiteRTEngine(private val context: Context) : AIEngine {
 
     companion object {
         const val MODEL_FILENAME = "gemma-4-E2B-it-int4.litertlm"
+        private const val MAX_NUM_TOKENS = 512
     }
 
-    // Gemma 4 E2B is natively multimodal (text + image + audio).
-    override val supportsVision: Boolean = true
-
-    // Cached once in prepare() — reflection is expensive; result never changes for
-    // a given SDK version at runtime.
-    private var cachedVisionMethod: java.lang.reflect.Method? = null
-    private var cachedAudioMethod: java.lang.reflect.Method? = null
-    private var nativeAudioCached = false
-
-    override val supportsNativeAudio: Boolean get() = nativeAudioCached
+    // Set in prepare() based on which EngineConfig succeeded.
+    override var supportsVision: Boolean = false
+        private set
+    override var supportsNativeAudio: Boolean = false
+        private set
 
     private val TAG = "LiteRTEngine"
 
@@ -68,10 +66,17 @@ class LiteRTEngine(private val context: Context) : AIEngine {
 
     private var engine: Engine? = null
 
+    // System instruction is applied once per conversation via ConversationConfig,
+    // not repeated in every user message.
     private val conversationConfig = ConversationConfig(
-        temperature = 0.1f,
-        topK = 1,
-        maxTokens = 512
+        samplerConfig = SamplerConfig(
+            topK = 1,
+            topP = 1.0,           // Double, not Float (confirmed from SDK source)
+            temperature = 0.1,    // Double, not Float
+        ),
+        systemInstruction = Contents.of(
+            listOf(Content.Text(PromptBuilder.SYSTEM_INSTRUCTION))
+        )
     )
 
     override var isReady: Boolean = false
@@ -79,58 +84,57 @@ class LiteRTEngine(private val context: Context) : AIEngine {
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
+    @OptIn(ExperimentalApi::class)
     override suspend fun prepare() = withContext(Dispatchers.IO) {
         val modelPath = candidatePaths.firstOrNull { File(it).exists() }
             ?: throw IllegalStateException(
                 "Model not found. Place $MODEL_FILENAME in:\n" +
                         candidatePaths.joinToString("\n") +
-                        "\n\nDownload from:\n" +
-                        "  huggingface.co/litert-community/gemma-4-E2B-it-litert-lm"
+                        "\n\nDownload from:\n  huggingface.co/litert-community/gemma-4-E2B-it-litert-lm"
             )
         Log.i(TAG, "Loading: $modelPath")
 
-        val eng = createEngine(modelPath)
-        eng.initialize()
+        val result = buildEngine(modelPath)
+        result.engine.initialize()
 
-        engine = eng
-        // Cache reflection results once — avoids per-call method scanning.
-        cachedVisionMethod = findVisionMethod()
-        cachedAudioMethod = findAudioMethod()
-        nativeAudioCached = cachedAudioMethod != null
+        engine = result.engine
+        supportsVision = result.hasVision
+        supportsNativeAudio = result.hasAudio
         isReady = true
-        Log.i(TAG, "LiteRT-LM Engine ready | vision=${supportsVision} | nativeAudio=$nativeAudioCached")
+        Log.i(TAG, "LiteRT-LM Engine ready | vision=${result.hasVision} | nativeAudio=${result.hasAudio}")
     }
 
-    // ── Inference — text (+ optional vision probe) ────────────────────────────
+    // ── Inference — text + optional vision ───────────────────────────────────
 
     override suspend fun transcribe(request: TranscriptionRequest): TranscriptionResult =
         withContext(Dispatchers.IO) {
             val eng = checkNotNull(engine) { "LiteRTEngine not prepared" }
 
+            // Use buildMessage() — rules are already in systemInstruction.
+            val userPrompt = PromptBuilder.buildMessage(request)
+            val contents = buildContents(
+                text = userPrompt,
+                bitmap = if (supportsVision) request.screenBitmap else null
+            )
+
             val corrected = eng.createConversation(conversationConfig).use { conv ->
-                runCatching {
-                    collectMaybeVision(conv, PromptBuilder.build(request), request.screenBitmap).trim()
-                }.onFailure { Log.e(TAG, "Transcription inference failed: ${it.message}") }
-                 .getOrDefault("")
+                runCatching { sendAndCollect(conv, contents).trim() }
+                    .onFailure { Log.e(TAG, "Transcription inference failed: ${it.message}") }
+                    .getOrDefault("")
             }
 
             val nouns = if (corrected.isNotBlank()) {
-                eng.createConversation(conversationConfig).use { nounConv ->
+                eng.createConversation(conversationConfig).use { conv ->
                     runCatching {
                         parseJsonArray(
-                            collect(nounConv, PromptBuilder.buildNounExtraction(corrected)).trim()
+                            sendAndCollect(conv, buildContents(PromptBuilder.buildNounExtraction(corrected))).trim()
                         )
                     }.getOrDefault(emptyList())
                 }
             } else emptyList()
 
             System.gc()
-
-            TranscriptionResult(
-                text = corrected,
-                detectedNouns = nouns,
-                engineUsed = EngineType.LITERT_GEMMA
-            )
+            TranscriptionResult(text = corrected, detectedNouns = nouns, engineUsed = EngineType.LITERT_GEMMA)
         }
 
     // ── Inference — native audio ──────────────────────────────────────────────
@@ -141,22 +145,20 @@ class LiteRTEngine(private val context: Context) : AIEngine {
         screenBitmap: Bitmap?,
         dictionaryHints: List<String>
     ): TranscriptionResult? = withContext(Dispatchers.IO) {
+        if (!supportsNativeAudio) return@withContext null
         val eng = engine ?: return@withContext null
-        val method = cachedAudioMethod ?: return@withContext null
 
-        val contextPrompt = PromptBuilder.buildAudioContext(screenText, screenBitmap, dictionaryHints)
-        val pcmArg: Any = if (method.parameterTypes[0] == ByteArray::class.java) shortsToBytes(pcm) else pcm
+        // Context is supplementary; audio bytes are the primary input.
+        val contextText = PromptBuilder.buildAudioContext(screenText, screenBitmap, dictionaryHints)
+        val contents = buildContents(
+            text = contextText,
+            bitmap = if (supportsVision) screenBitmap else null,
+            pcm = pcm
+        )
 
         val corrected = runCatching {
             eng.createConversation(conversationConfig).use { conv ->
-                val sb = StringBuilder()
-                val params = if (method.parameterCount >= 2) arrayOf(pcmArg, contextPrompt) else arrayOf(pcmArg)
-                @Suppress("UNCHECKED_CAST")
-                val flow = method.invoke(conv, *params) as Flow<String>
-                flow.catch { e -> Log.e(TAG, "Audio stream error: ${e.message}") }
-                    .collect { sb.append(it) }
-                Log.i(TAG, "Native audio API active")
-                sb.toString().trim()
+                sendAndCollect(conv, contents).trim()
             }
         }.onFailure { Log.e(TAG, "Native audio transcription failed: ${it.message}") }
          .getOrDefault("")
@@ -165,7 +167,9 @@ class LiteRTEngine(private val context: Context) : AIEngine {
 
         val nouns = runCatching {
             eng.createConversation(conversationConfig).use { conv ->
-                parseJsonArray(collect(conv, PromptBuilder.buildNounExtraction(corrected)).trim())
+                parseJsonArray(
+                    sendAndCollect(conv, buildContents(PromptBuilder.buildNounExtraction(corrected))).trim()
+                )
             }
         }.getOrDefault(emptyList())
 
@@ -176,90 +180,118 @@ class LiteRTEngine(private val context: Context) : AIEngine {
     override fun release() {
         engine?.close()
         engine = null
-        cachedVisionMethod = null
-        cachedAudioMethod = null
-        nativeAudioCached = false
+        supportsVision = false
+        supportsNativeAudio = false
         isReady = false
         System.gc()
         Log.d(TAG, "LiteRTEngine released")
     }
 
-    // ── Reflection probes ─────────────────────────────────────────────────────
+    // ── Engine construction ───────────────────────────────────────────────────
+
+    private data class EngineResult(val engine: Engine, val hasVision: Boolean, val hasAudio: Boolean)
 
     /**
-     * Probes for a native image overload on [Conversation.sendMessageAsync].
-     * Tries `sendMessageAsync(String, List<Bitmap>)` and `sendMessageAsync(String, Bitmap)`.
-     * Returns null when no overload is found — callers fall back to text-only.
+     * Tries NPU→GPU→CPU, each time attempting full multimodal (vision+audio) first,
+     * then vision-only, then text-only.  Returns the first configuration that succeeds.
+     * Note: [Engine.initialize] must be called separately after construction.
      */
-    private fun findVisionMethod(): Method? = runCatching {
-        Conversation::class.java.methods.firstOrNull { m ->
-            m.name == "sendMessageAsync" && m.parameterCount >= 2 &&
-            (m.parameterTypes[1].isAssignableFrom(List::class.java) ||
-             m.parameterTypes[1] == Bitmap::class.java)
-        }
-    }.getOrNull()
-
-    /**
-     * Probes for a native audio method on [Conversation].
-     * Checks common names: sendAudioAsync, transcribeAudio, generateFromAudio.
-     * Returns null when none is found.
-     */
-    private fun findAudioMethod(): Method? = runCatching {
-        val names = setOf("sendAudioAsync", "transcribeAudio", "generateFromAudio", "sendAudio")
-        Conversation::class.java.methods.firstOrNull { m ->
-            m.name in names && m.parameterTypes.isNotEmpty() &&
-            (m.parameterTypes[0] == ShortArray::class.java || m.parameterTypes[0] == ByteArray::class.java)
-        }
-    }.getOrNull()
-
-    // ── Helpers ───────────────────────────────────────────────────────────────
-
-    private fun createEngine(modelPath: String): Engine {
+    private fun buildEngine(modelPath: String): EngineResult {
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
-        for (backend in listOf(
+        val primaries = listOf(
             Backend.NPU(nativeLibraryDir = nativeLibDir),
             Backend.GPU(),
             Backend.CPU()
-        )) {
+        )
+
+        for (primary in primaries) {
+            val name = primary::class.simpleName
+
+            // Full multimodal
             runCatching {
-                return Engine(EngineConfig(modelPath = modelPath, backend = backend))
-            }.onFailure {
-                Log.w(TAG, "Backend ${backend::class.simpleName} unavailable: ${it.message}")
-            }
+                Engine(EngineConfig(
+                    modelPath = modelPath, backend = primary,
+                    visionBackend = Backend.CPU(), audioBackend = Backend.CPU(),
+                    maxNumTokens = MAX_NUM_TOKENS
+                ))
+            }.onSuccess {
+                Log.i(TAG, "$name + vision + audio backend selected")
+                return EngineResult(it, hasVision = true, hasAudio = true)
+            }.onFailure { Log.w(TAG, "$name + multimodal: ${it.message}") }
+
+            // Vision only
+            runCatching {
+                Engine(EngineConfig(
+                    modelPath = modelPath, backend = primary,
+                    visionBackend = Backend.CPU(), audioBackend = null,
+                    maxNumTokens = MAX_NUM_TOKENS
+                ))
+            }.onSuccess {
+                Log.i(TAG, "$name + vision backend selected")
+                return EngineResult(it, hasVision = true, hasAudio = false)
+            }.onFailure { Log.w(TAG, "$name + vision: ${it.message}") }
+
+            // Text only
+            runCatching {
+                Engine(EngineConfig(
+                    modelPath = modelPath, backend = primary,
+                    maxNumTokens = MAX_NUM_TOKENS
+                ))
+            }.onSuccess {
+                Log.i(TAG, "$name text-only backend selected")
+                return EngineResult(it, hasVision = false, hasAudio = false)
+            }.onFailure { Log.w(TAG, "$name text-only: ${it.message}") }
         }
-        return Engine(EngineConfig(modelPath = modelPath, backend = Backend.CPU()))
+
+        throw IllegalStateException("No backend available for $modelPath")
     }
 
-    /** Collects a streaming response, injecting the bitmap via the vision probe if available. */
-    private suspend fun collectMaybeVision(conv: Conversation, prompt: String, bitmap: Bitmap?): String {
-        if (bitmap != null) {
-            val method = cachedVisionMethod
-            if (method != null) {
-                val result = runCatching {
-                    val imgArg: Any =
-                        if (method.parameterTypes[1].isAssignableFrom(List::class.java)) listOf(bitmap)
-                        else bitmap
-                    @Suppress("UNCHECKED_CAST")
-                    val flow = method.invoke(conv, prompt, imgArg) as Flow<String>
-                    val sb = StringBuilder()
-                    flow.catch { e -> Log.w(TAG, "Vision stream error: ${e.message}") }
-                        .collect { sb.append(it) }
-                    Log.i(TAG, "Native vision API active")
-                    sb.toString()
-                }.onFailure { Log.w(TAG, "Vision probe invocation failed: ${it.message}") }
-                 .getOrNull()
-                if (result != null) return result
-            }
+    // ── Inference helpers ─────────────────────────────────────────────────────
+
+    /**
+     * Sends [contents] to the conversation and suspends until [MessageCallback.onDone]
+     * or [MessageCallback.onError] is called.  Cancellation triggers [Conversation.cancelProcess].
+     */
+    private suspend fun sendAndCollect(conv: Conversation, contents: Contents): String =
+        suspendCancellableCoroutine { cont ->
+            val sb = StringBuilder()
+            conv.sendMessageAsync(
+                contents,
+                object : MessageCallback {
+                    override fun onMessage(message: Message) { sb.append(message.toString()) }
+                    override fun onDone() { if (cont.isActive) cont.resume(sb.toString()) }
+                    override fun onError(throwable: Throwable) {
+                        Log.e(TAG, "Inference error: ${throwable.message}")
+                        if (cont.isActive) cont.resume(sb.toString())
+                    }
+                },
+                emptyMap()
+            )
+            cont.invokeOnCancellation { runCatching { conv.cancelProcess() } }
         }
-        return collect(conv, prompt)
+
+    private fun buildContents(text: String, bitmap: Bitmap? = null, pcm: ShortArray? = null): Contents {
+        val parts = mutableListOf<Content>()
+        // Image and audio before text — model attends to primary input (audio) last,
+        // matching the instruction that audio is primary.
+        bitmap?.let { parts.add(Content.ImageBytes(it.toPngByteArray())) }
+        pcm?.let { parts.add(Content.AudioBytes(shortsToBytes(it))) }
+        parts.add(Content.Text(text))
+        return Contents.of(parts)
     }
 
-    private suspend fun collect(conv: Conversation, prompt: String): String {
-        val sb = StringBuilder()
-        conv.sendMessageAsync(prompt)
-            .catch { e -> Log.e(TAG, "Inference stream error: ${e.message}") }
-            .collect { chunk -> sb.append(chunk) }
-        return sb.toString()
+    // ── Utility ───────────────────────────────────────────────────────────────
+
+    private fun Bitmap.toPngByteArray(): ByteArray {
+        val out = ByteArrayOutputStream()
+        compress(Bitmap.CompressFormat.PNG, 100, out)
+        return out.toByteArray()
+    }
+
+    private fun shortsToBytes(shorts: ShortArray): ByteArray {
+        val buf = ByteBuffer.allocate(shorts.size * 2).order(ByteOrder.LITTLE_ENDIAN)
+        for (s in shorts) buf.putShort(s)
+        return buf.array()
     }
 
     private fun parseJsonArray(raw: String): List<String> {
@@ -272,11 +304,5 @@ class LiteRTEngine(private val context: Context) : AIEngine {
         } catch (_: Exception) {
             emptyList()
         }
-    }
-
-    private fun shortsToBytes(shorts: ShortArray): ByteArray {
-        val buf = ByteBuffer.allocate(shorts.size * 2).order(ByteOrder.LITTLE_ENDIAN)
-        for (s in shorts) buf.putShort(s)
-        return buf.array()
     }
 }

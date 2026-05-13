@@ -3,25 +3,25 @@ package com.example.gemmakey.ai
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
-import com.google.android.ai.edge.aicore.DownloadCallback
-import com.google.android.ai.edge.aicore.DownloadConfig
-import com.google.android.ai.edge.aicore.GenerativeAIException
-import com.google.android.ai.edge.aicore.GenerativeModel
-import com.google.android.ai.edge.aicore.generationConfig
+import com.google.mlkit.genai.common.DownloadStatus
+import com.google.mlkit.genai.common.ModelStatus
+import com.google.mlkit.genai.prompt.Generation
+import com.google.mlkit.genai.prompt.GenerativeModel
+import com.google.mlkit.genai.prompt.generationConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 
 /**
- * AICore-backed engine that routes inference through Gemini Nano.
+ * AICore-backed engine that routes inference through Gemini Nano via ML Kit GenAI Prompt API.
  *
- * This engine is only instantiated when [AIEngineFactory.isAICoreAvailable]
- * returns true.  All processing happens on-device; no network calls are made.
+ * Only instantiated when [AIEngineFactory.isAICoreAvailable] returns true.
+ * All processing is on-device; no network calls are made.
  */
 class AICoreEngine(private val context: Context) : AIEngine {
 
-    // AICore/Gemini Nano is text-only in the current experimental SDK (0.0.1-exp03).
+    // ML Kit GenAI Prompt API is text-only — no image/PCM audio support.
     override val supportsVision: Boolean = false
     override val supportsNativeAudio: Boolean = false
 
@@ -34,32 +34,29 @@ class AICoreEngine(private val context: Context) : AIEngine {
 
     override suspend fun prepare() = withContext(Dispatchers.IO) {
         try {
-            val appContext = context
-            val config = generationConfig {
-                context = appContext
+            val gm = Generation.getClient(generationConfig {
                 temperature = 0.1f
                 topK = 1
                 maxOutputTokens = 512
-            }
-            val downloadConfig = DownloadConfig(
-                downloadCallback = object : DownloadCallback {
-                    override fun onDownloadStarted(bytesToDownload: Long) {
-                        Log.d(TAG, "Model download started: $bytesToDownload bytes")
+            })
+
+            when (gm.checkStatus()) {
+                ModelStatus.AVAILABLE -> Unit
+                ModelStatus.DOWNLOADABLE -> {
+                    Log.i(TAG, "Downloading Gemini Nano model…")
+                    gm.download().collect { status ->
+                        when (status) {
+                            is DownloadStatus.Failed ->
+                                throw IllegalStateException("Gemini Nano download failed: ${status.errorCode}")
+                            else -> Unit
+                        }
                     }
-                    override fun onDownloadProgress(totalBytesDownloaded: Long) {}
-                    override fun onDownloadCompleted() {
-                        Log.d(TAG, "Model download complete")
-                    }
-                    override fun onDownloadFailed(failureStatus: String, e: GenerativeAIException) {
-                        Log.e(TAG, "Model download failed [$failureStatus]: ${e.message}")
-                    }
+                    Log.i(TAG, "Gemini Nano download complete")
                 }
-            )
+                else -> throw IllegalStateException("Gemini Nano unavailable on this device")
+            }
 
-            val gm = GenerativeModel(generationConfig = config, downloadConfig = downloadConfig)
-            // Warms up the inference engine; blocks until model weights are ready.
-            gm.prepareInferenceEngine()
-
+            gm.warmup()
             model = gm
             isReady = true
             Log.i(TAG, "Gemini Nano (AICore) ready")
@@ -72,12 +69,9 @@ class AICoreEngine(private val context: Context) : AIEngine {
     override suspend fun transcribe(request: TranscriptionRequest): TranscriptionResult =
         withContext(Dispatchers.IO) {
             val m = checkNotNull(model) { "AICoreEngine not prepared" }
-
             val corrected = runGeneration(m, PromptBuilder.build(request)).trim()
             val nouns = extractNouns(m, corrected)
-
             System.gc()
-
             TranscriptionResult(
                 text = corrected,
                 detectedNouns = nouns,
@@ -89,7 +83,7 @@ class AICoreEngine(private val context: Context) : AIEngine {
         val sb = StringBuilder()
         m.generateContentStream(prompt)
             .catch { e -> Log.e(TAG, "Generation error: ${e.message}") }
-            .collect { response -> response.text?.let { sb.append(it) } }
+            .collect { chunk -> chunk.candidates.firstOrNull()?.text?.let { sb.append(it) } }
         return sb.toString()
     }
 
@@ -120,7 +114,7 @@ class AICoreEngine(private val context: Context) : AIEngine {
         screenText: String,
         screenBitmap: Bitmap?,
         dictionaryHints: List<String>
-    ): TranscriptionResult? = null  // AICore SDK does not expose a PCM audio API.
+    ): TranscriptionResult? = null  // ML Kit GenAI Prompt API does not expose a PCM audio API.
 
     override fun release() {
         model?.close()

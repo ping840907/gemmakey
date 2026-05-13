@@ -170,14 +170,14 @@ AICore detection checks for the `com.google.android.aicore` package and the `and
 | Area | What was done |
 |---|---|
 | **Build** | Root `build.gradle.kts` fixed; `ndk.abiFilters`/`splits.abi` conflict removed; `kotlinOptions` restored (`compilerOptions` is KMP-only) |
-| **AICoreEngine** | Fixed `GenerativeAIException`, `DownloadCallback` signatures, `DownloadConfig` constructor, `generateContentStream()` Flow, `prepareInferenceEngine()`, `model?.close()` |
-| **LiteRTEngine** | `ConversationConfig` parameter, `Conversation.use {}`, `companion object MODEL_FILENAME`, `engine?.close()`; reflection probes for vision/audio methods cached after `prepare()` |
+| **AICoreEngine** | Rewritten for correct SDK `com.google.mlkit:genai-prompt:1.0.0-beta2`; `Generation.getClient(generationConfig{})`, Flow-based `generateContentStream`, `checkStatus()`/`download()`/`warmup()`, `response.candidates.firstOrNull()?.text` |
+| **LiteRTEngine** | Fully rewritten with correct SDK API: `ConversationConfig(samplerConfig=SamplerConfig(topK, topP:Double, temperature:Double), systemInstruction=Contents.of(...))`, `sendMessageAsync(Contents, MessageCallback, emptyMap())`, `Content.ImageBytes/AudioBytes/Text`, `EngineConfig(modelPath, backend, visionBackend, audioBackend, maxNumTokens)`, `@OptIn(ExperimentalApi::class)` on `engine.initialize()`; NPU→GPU→CPU fallback with vision+audio/vision/text-only tiers |
 | **GemmaAccessibilityService** | `AccessibilityNodeInfo` child recycling memory leak fixed |
 | **AudioRecorder** | Daemon drain thread prevents `AudioRecord` buffer overflow beyond ~2 s |
 | **GemmaKeyIMEService** | Pipeline starts at `onMicDown()`, not after; `voiceJob` cancelled before re-launch; RECORD_AUDIO permission checked before mic; SR timeout (15 s); screenshot throttle (3 s); native audio path via `AudioRecorder` (mutually exclusive with SR) |
 | **ModalityCollector** | Zero-latency parallel context collection; `MINIMAL` / `TEXT_CONTEXT` / `FULL` state machine |
 | **AIEngine interface** | `supportsVision`, `supportsNativeAudio`, `transcribeAudio()` added; `LiteRTEngine` implements all; `AICoreEngine` is text-only |
-| **PromptBuilder** | 4×4 pixel visual descriptor from screenshot; `buildAudioContext()` for native audio path |
+| **PromptBuilder** | 4×4 pixel visual descriptor from screenshot; `buildAudioContext()` for native audio path; `SYSTEM_INSTRUCTION` constant (audio-primary rule); `buildMessage()` for LiteRTEngine (data-only, rules in `systemInstruction`); `build()` embeds `SYSTEM_INSTRUCTION` inline for AICoreEngine |
 | **SetupActivity** | RECORD_AUDIO runtime permission flow (`ActivityResultContracts.RequestPermission`); "Don't ask again" redirects to app settings |
 | **AIEngineFactory** | AICore package verified (`com.google.android.aicore`); package list + service check |
 | **Infrastructure** | `gradle.properties`, `gradle-wrapper.properties`, `gradlew`, `.gitignore` |
@@ -188,7 +188,7 @@ AICore detection checks for the `com.google.android.aicore` package and the `and
 |---|---|---|
 | 1 | Medium | `isAICoreAvailable()` uses the unofficial `"android_app_intelligence"` system service string — if Google renames it, AICore detection silently falls back to LiteRT on a capable device |
 | 2 | Low | `GemmaAccessibilityService` fires `refreshScreenText()` on every `TYPE_WINDOW_CONTENT_CHANGED` event (can be very frequent in apps with live updates); consider debouncing by ~300 ms |
-| 3 | ~~Low~~ | ~~`AICoreEngine.transcribeAudio()` used a fully-qualified `android.graphics.Bitmap?` — fixed, `import android.graphics.Bitmap` added~~ |
+| 3 | ~~Medium~~ | ~~`AICoreEngine` used old experimental SDK `com.google.android.ai.edge.aicore:aicore:0.0.1-exp03` with wrong class names — replaced with `com.google.mlkit:genai-prompt:1.0.0-beta2`; `LiteRTEngine` used wrong `ConversationConfig` params, callback-less `sendMessageAsync`, missing `visionBackend`/`audioBackend`/`maxNumTokens` in `EngineConfig`, reflection-based vision/audio probes — all fixed~~ |
 | 4 | Info | When `SpeechRecognizer` returns an empty string (no speech detected), the pipeline transitions straight to IDLE with no user feedback; a brief "No speech detected" status would improve UX |
 
 ---
