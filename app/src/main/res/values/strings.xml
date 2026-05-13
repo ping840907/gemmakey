@@ -14,6 +14,7 @@
     <string name="setup_title">GemmaKey Setup</string>
     <string name="btn_accessibility_settings">Open Accessibility Settings</string>
     <string name="btn_select_keyboard">Select Keyboard</string>
+    <string name="btn_grant_mic">Grant Microphone Permission</string>
 
     <!-- Keyboard UI -->
     <string name="btn_mic">Hold to speak</string>

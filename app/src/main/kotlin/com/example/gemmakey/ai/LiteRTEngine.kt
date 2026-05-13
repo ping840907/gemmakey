@@ -90,8 +90,8 @@ class LiteRTEngine(private val context: Context) : AIEngine {
 
             // Fresh conversation per event — no cross-event memory leakage.
             // use{} ensures close() even if an exception escapes runCatching.
-            // TODO: when LiteRT-LM Contents API is confirmed for v0.11.0, pass
-            //       request.screenBitmap via Content.image() for native vision input.
+            // PromptBuilder.build() includes a compact visual descriptor from screenBitmap.
+            // Native image token injection awaits LiteRT-LM Contents API confirmation.
             val corrected = eng.createConversation(conversationConfig).use { conv ->
                 runCatching { collect(conv, PromptBuilder.build(request)).trim() }
                     .onFailure { Log.e(TAG, "Transcription inference failed: ${it.message}") }

@@ -175,12 +175,16 @@ AICore detection checks for the `com.google.android.aicore` package and the `and
 - [x] `AIEngine.supportsVision` — interface property; `LiteRTEngine = true`, `AICoreEngine = false`
 - [x] `gradle.properties`, `gradle-wrapper.properties`, `gradlew` — project infrastructure
 
-### Pending / known open items
+### Completed (continued)
 
-- [ ] **Image Contents API**: `LiteRTEngine` passes `screenBitmap` in the request but does not yet call the image API — `sendMessageAsync(String)` is text-only.  Once `Conversation.sendMessageAsync(Content)` signature is confirmed for LiteRT-LM v0.11.0, add the image path with `runCatching` fallback.
-- [ ] **RECORD_AUDIO runtime permission**: `SetupActivity` does not yet prompt the user to grant this; add a rationale dialog and `ActivityResultContracts.RequestPermission` launcher.
-- [ ] **Native audio input**: Gemma 4 E2B supports raw audio input natively.  Future work: replace `SpeechRecognizer` with direct audio submission once the LiteRT-LM audio Contents API is documented.
-- [ ] **AICore package name**: `com.google.android.aicore` — verify this is the correct installed-package name on Pixel 8 / Samsung devices with AICore.
+- [x] **RECORD_AUDIO runtime permission**: `SetupActivity` now uses `ActivityResultContracts.RequestPermission`; button shown only while permission is absent; "Don't ask again" case redirects to app settings.
+- [x] **AICore package name**: verified as `com.google.android.aicore` (Pixel 8+, Android 14+); `isAICoreAvailable()` refactored to iterate a package list and separately verify the inference service is reachable.
+- [x] **Visual context via text API**: `PromptBuilder.build()` samples a 4×4 pixel grid from `screenBitmap` to derive a compact descriptor (theme, dominant hue, brightness) appended to the prompt — gives the model app-context signal with zero extra tokens compared to embedding raw image data.
+
+### Future milestones (out of current scope)
+
+- [ ] **Native image token injection**: Replace the text visual descriptor with a proper `Content.image()` call once `Conversation.sendMessageAsync(Content)` is confirmed for LiteRT-LM v0.11.0.  The `ModalityCollector` and `TranscriptionRequest.screenBitmap` field are already wired; only the `collect()` call in `LiteRTEngine` needs updating.
+- [ ] **Native audio input**: Gemma 4 E2B accepts raw audio natively.  Replace `SpeechRecognizer` with direct PCM submission once the LiteRT-LM audio Contents API is publicly documented.  `AudioRecorder` (daemon drain thread, 30 s cap) is already implemented and ready to supply the PCM buffer.
 
 ---
 

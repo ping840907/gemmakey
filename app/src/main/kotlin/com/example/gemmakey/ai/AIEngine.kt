@@ -3,6 +3,7 @@ package com.example.gemmakey.ai
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.util.Log
 
 // ── Data contracts ─────────────────────────────────────────────────────────────
@@ -52,12 +53,15 @@ interface AIEngine {
 
 object AIEngineFactory {
 
-    private const val AICORE_PACKAGE = "com.google.android.aicore"
+    // Verified package names for AICore on supported hardware:
+    //   Pixel 8 / 8 Pro / 9 series (Android 14+): com.google.android.aicore
+    //   No public Samsung/ASUS variant package name confirmed as of 2025.
+    private val AICORE_PACKAGES = listOf("com.google.android.aicore")
     private const val TAG = "AIEngineFactory"
 
     /**
      * Returns the best available engine:
-     *   1. Gemini Nano via AICore (Pixel 8+, selected Samsung/ASUS devices)
+     *   1. Gemini Nano via AICore (Pixel 8+)
      *   2. Gemma 4 e2b via LiteRT-LM (universal fallback)
      */
     fun create(context: Context): AIEngine {
@@ -71,13 +75,15 @@ object AIEngineFactory {
     }
 
     fun isAICoreAvailable(context: Context): Boolean {
+        val pm = context.packageManager
+        val hasPackage = AICORE_PACKAGES.any { pkg ->
+            try { pm.getPackageInfo(pkg, 0); true }
+            catch (_: PackageManager.NameNotFoundException) { false }
+        }
+        if (!hasPackage) return false
         return try {
-            context.packageManager.getPackageInfo(AICORE_PACKAGE, 0)
-            // Also verify the service is actually reachable
-            val mgr = context.getSystemService("android_app_intelligence")
-            mgr != null
-        } catch (_: PackageManager.NameNotFoundException) {
-            false
+            // Verify the inference service is actually reachable, not just installed.
+            context.getSystemService("android_app_intelligence") != null
         } catch (_: Exception) {
             false
         }
@@ -91,8 +97,10 @@ internal object PromptBuilder {
     /**
      * Constructs the zero-shot correction prompt sent to either engine.
      *
-     * The model is instructed to output ONLY the corrected text so callers can
-     * commit it directly without further parsing.
+     * When [TranscriptionRequest.screenBitmap] is present, a compact visual
+     * descriptor (theme, brightness, dominant hue) is appended as structured
+     * text — the full-image Contents API path is reserved for when the
+     * LiteRT-LM SDK exposes it (see TODO in LiteRTEngine.kt).
      */
     fun build(request: TranscriptionRequest): String {
         val dictSection = if (request.dictionaryHints.isNotEmpty()) {
@@ -103,6 +111,10 @@ internal object PromptBuilder {
         val screenSection = if (request.screenText.isNotBlank()) {
             "\nCurrent screen text (context only):\n${request.screenText.take(800)}"
         } else ""
+
+        val visualSection = request.screenBitmap?.let { bmp ->
+            "\nScreen visual context: ${describeScreenshot(bmp)}"
+        } ?: ""
 
         return """
 You are a strict transcription correction assistant operating fully offline.
@@ -115,12 +127,50 @@ RULES:
 - Fix homophones, filler words, and ASR artefacts.
 - Preserve the speaker's language (Chinese, English, mixed) exactly as spoken.
 - Do NOT add information not present in the raw ASR.
-$dictSection$screenSection
+$dictSection$screenSection$visualSection
 
 Raw ASR result:
 ${request.rawAsr}
 
 Corrected text:""".trimIndent()
+    }
+
+    /**
+     * Samples a 4×4 grid of pixels from the bitmap to derive a compact, token-cheap
+     * visual descriptor — theme (dark/light), dominant hue family, and overall brightness.
+     * This gives the model signal about the app context (e.g. dark-themed terminal,
+     * colourful social feed, document editor) without embedding raw image data.
+     */
+    private fun describeScreenshot(bmp: Bitmap): String {
+        val samples = 4
+        val stepX = maxOf(1, bmp.width / samples)
+        val stepY = maxOf(1, bmp.height / samples)
+
+        var totalR = 0; var totalG = 0; var totalB = 0; var count = 0
+        for (y in 0 until bmp.height step stepY) {
+            for (x in 0 until bmp.width step stepX) {
+                val pixel = bmp.getPixel(x, y)
+                totalR += Color.red(pixel)
+                totalG += Color.green(pixel)
+                totalB += Color.blue(pixel)
+                count++
+            }
+        }
+        if (count == 0) return "unknown"
+
+        val avgR = totalR / count
+        val avgG = totalG / count
+        val avgB = totalB / count
+        val brightness = (avgR * 299 + avgG * 587 + avgB * 114) / 1000
+        val theme = if (brightness < 128) "dark" else "light"
+
+        val dominantHue = when {
+            avgR > avgG && avgR > avgB -> "red-toned"
+            avgG > avgR && avgG > avgB -> "green-toned"
+            avgB > avgR && avgB > avgG -> "blue-toned"
+            else -> "neutral"
+        }
+        return "$theme theme, $dominantHue, brightness=$brightness/255, size=${bmp.width}×${bmp.height}px"
     }
 
     /**

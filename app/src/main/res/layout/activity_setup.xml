@@ -30,6 +30,13 @@
             android:layout_marginBottom="32dp" />
 
         <Button
+            android:id="@+id/btn_grant_mic"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/btn_grant_mic"
+            android:layout_marginBottom="12dp" />
+
+        <Button
             android:id="@+id/btn_enable_accessibility"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
