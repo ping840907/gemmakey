@@ -39,11 +39,26 @@ interface AIEngine {
     /** True if the engine accepts image input in [TranscriptionRequest.screenBitmap]. */
     val supportsVision: Boolean
 
+    /** True if the engine can directly transcribe raw 16 kHz 16-bit PCM audio. */
+    val supportsNativeAudio: Boolean
+
     /** Prepare the model. Call once before [transcribe]. */
     suspend fun prepare()
 
     /** Produce a corrected transcription for the given request. */
     suspend fun transcribe(request: TranscriptionRequest): TranscriptionResult
+
+    /**
+     * Transcribe raw PCM audio (16 kHz, 16-bit, mono) directly without
+     * Android SpeechRecognizer.  Only called when [supportsNativeAudio] is true.
+     * Returns null if the audio API is unavailable at runtime.
+     */
+    suspend fun transcribeAudio(
+        pcm: ShortArray,
+        screenText: String = "",
+        screenBitmap: Bitmap? = null,
+        dictionaryHints: List<String> = emptyList()
+    ): TranscriptionResult?
 
     /** Release all native/heap resources associated with the engine. */
     fun release()
@@ -99,8 +114,9 @@ internal object PromptBuilder {
      *
      * When [TranscriptionRequest.screenBitmap] is present, a compact visual
      * descriptor (theme, brightness, dominant hue) is appended as structured
-     * text — the full-image Contents API path is reserved for when the
-     * LiteRT-LM SDK exposes it (see TODO in LiteRTEngine.kt).
+     * text.  If the SDK exposes a native image overload, [LiteRTEngine] will
+     * additionally inject the full bitmap via the reflection probe before
+     * calling this prompt.
      */
     fun build(request: TranscriptionRequest): String {
         val dictSection = if (request.dictionaryHints.isNotEmpty()) {
@@ -171,6 +187,19 @@ Corrected text:""".trimIndent()
             else -> "neutral"
         }
         return "$theme theme, $dominantHue, brightness=$brightness/255, size=${bmp.width}×${bmp.height}px"
+    }
+
+    /**
+     * Supplementary context string sent alongside raw audio tokens when the
+     * engine's native audio API is active.  Includes screen text, visual
+     * descriptor, and dictionary hints but no ASR text (that is in the audio).
+     */
+    fun buildAudioContext(screenText: String, bitmap: Bitmap?, hints: List<String>): String {
+        val parts = mutableListOf<String>()
+        if (screenText.isNotBlank()) parts.add("Screen context:\n${screenText.take(400)}")
+        bitmap?.let { parts.add("Visual: ${describeScreenshot(it)}") }
+        if (hints.isNotEmpty()) parts.add("Known terms: ${hints.joinToString(", ")}")
+        return parts.joinToString("\n")
     }
 
     /**

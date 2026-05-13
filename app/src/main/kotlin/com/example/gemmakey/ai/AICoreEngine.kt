@@ -22,6 +22,7 @@ class AICoreEngine(private val context: Context) : AIEngine {
 
     // AICore/Gemini Nano is text-only in the current experimental SDK (0.0.1-exp03).
     override val supportsVision: Boolean = false
+    override val supportsNativeAudio: Boolean = false
 
     private val TAG = "AICoreEngine"
 
@@ -112,6 +113,13 @@ class AICoreEngine(private val context: Context) : AIEngine {
             emptyList()
         }
     }
+
+    override suspend fun transcribeAudio(
+        pcm: ShortArray,
+        screenText: String,
+        screenBitmap: android.graphics.Bitmap?,
+        dictionaryHints: List<String>
+    ): TranscriptionResult? = null  // AICore SDK does not expose a PCM audio API.
 
     override fun release() {
         model?.close()

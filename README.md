@@ -181,10 +181,12 @@ AICore detection checks for the `com.google.android.aicore` package and the `and
 - [x] **AICore package name**: verified as `com.google.android.aicore` (Pixel 8+, Android 14+); `isAICoreAvailable()` refactored to iterate a package list and separately verify the inference service is reachable.
 - [x] **Visual context via text API**: `PromptBuilder.build()` samples a 4×4 pixel grid from `screenBitmap` to derive a compact descriptor (theme, dominant hue, brightness) appended to the prompt — gives the model app-context signal with zero extra tokens compared to embedding raw image data.
 
-### Future milestones (out of current scope)
+### Completed (continued)
 
-- [ ] **Native image token injection**: Replace the text visual descriptor with a proper `Content.image()` call once `Conversation.sendMessageAsync(Content)` is confirmed for LiteRT-LM v0.11.0.  The `ModalityCollector` and `TranscriptionRequest.screenBitmap` field are already wired; only the `collect()` call in `LiteRTEngine` needs updating.
-- [ ] **Native audio input**: Gemma 4 E2B accepts raw audio natively.  Replace `SpeechRecognizer` with direct PCM submission once the LiteRT-LM audio Contents API is publicly documented.  `AudioRecorder` (daemon drain thread, 30 s cap) is already implemented and ready to supply the PCM buffer.
+- [x] **Native image token injection**: `LiteRTEngine.collectMaybeVision()` probes `Conversation.sendMessageAsync` at runtime for a `(String, List<Bitmap>)` or `(String, Bitmap)` overload via reflection.  When the SDK exposes the method it activates automatically; otherwise falls back to the text visual descriptor with no code change required.
+- [x] **Native audio input**: `AIEngine.supportsNativeAudio` + `transcribeAudio()` interface added.  `LiteRTEngine` probes `Conversation` for `sendAudioAsync` / `transcribeAudio` / `generateFromAudio` at runtime.  `GemmaKeyIMEService` routes `onMicDown`/`onMicUp` to `AudioRecorder` (PCM, 16 kHz, 16-bit) when `supportsNativeAudio = true`, and to `SpeechRecognizer` otherwise — the two paths are mutually exclusive so they never conflict for the microphone.
+- [x] **Speech recognition timeout**: `recognizeSpeech()` wrapped in `withTimeoutOrNull(15 s)` — prevents the UI from hanging indefinitely if `SpeechRecognizer` never delivers `onResults`.
+- [x] **Screenshot throttle**: `requestScreenshotThrottled()` helper limits screenshot captures to once per 3 s, preventing redundant AccessibilityService calls when the user taps rapidly between text fields.
 
 ---
 

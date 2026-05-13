@@ -15,6 +15,7 @@ import android.view.inputmethod.EditorInfo
 import com.example.gemmakey.ai.AIEngine
 import com.example.gemmakey.ai.AIEngineFactory
 import com.example.gemmakey.ai.TranscriptionRequest
+import com.example.gemmakey.audio.AudioRecorder
 import com.example.gemmakey.dict.CustomDictionary
 import kotlinx.coroutines.*
 import kotlin.coroutines.resume
@@ -22,19 +23,25 @@ import kotlin.coroutines.resume
 /**
  * Main Input Method Service.
  *
- * Flow for each voice-input event:
- *   1. User presses the mic button → SpeechRecognizer begins listening immediately.
- *   2. User speaks.
- *   3. User releases the mic button → stopListening() signals end-of-speech.
- *   4. SpeechRecognizer delivers raw text via onResults().
- *   5. [GemmaAccessibilityService] provides screen-text context.
- *   6. [AIEngine] (Gemini Nano or Gemma 4 e2b) refines the transcript.
- *   7. Corrected text is committed to the focused field.
- *   8. Detected nouns are persisted; all runtime buffers are freed.
+ * ## SpeechRecognizer path (default)
+ *   onMicDown → SpeechRecognizer.startListening() + ModalityCollector.startCollection()
+ *   onMicUp   → SpeechRecognizer.stopListening()
+ *   onResults → AI correction → commitText
+ *
+ * ## Native audio path (when engine.supportsNativeAudio = true)
+ *   onMicDown → AudioRecorder.startRecording() + ModalityCollector.startCollection()
+ *   onMicUp   → stop recorder → AI transcribeAudio() → commitText
+ *
+ * The two paths are mutually exclusive: they never share the microphone.
  */
 class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardActionListener {
 
     private val TAG = "GemmaKeyIME"
+
+    private companion object {
+        const val RECOGNITION_TIMEOUT_MS = 15_000L   // prevent SR hanging indefinitely
+        const val SCREENSHOT_THROTTLE_MS = 3_000L    // limit capture on rapid field switches
+    }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -43,8 +50,10 @@ class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardAct
     private var aiEngine: AIEngine? = null
 
     private var speechRecognizer: SpeechRecognizer? = null
+    private val audioRecorder = AudioRecorder()
     private var voiceJob: Job? = null
     private val modalityCollector = ModalityCollector()
+    private var lastScreenshotRequestMs = 0L
 
     // ── Service lifecycle ─────────────────────────────────────────────────────
 
@@ -58,6 +67,7 @@ class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardAct
     override fun onDestroy() {
         scope.cancel()
         modalityCollector.cancel()
+        audioRecorder.release()
         aiEngine?.release()
         speechRecognizer?.destroy()
         super.onDestroy()
@@ -74,9 +84,8 @@ class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardAct
         super.onStartInputView(info, restarting)
         keyboardViewManager.setState(KeyboardViewManager.State.IDLE)
         keyboardViewManager.clearPreview()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            GemmaAccessibilityService.instance?.requestScreenshot()
-        }
+        // Throttle: avoid spamming screenshot capture when user taps between fields rapidly.
+        requestScreenshotThrottled()
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
@@ -100,7 +109,7 @@ class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardAct
                         )
                     }
                 }
-                Log.i(TAG, "AI engine ready")
+                Log.i(TAG, "AI engine ready | nativeAudio=${engine.supportsNativeAudio}")
             } catch (e: Exception) {
                 Log.e(TAG, "AI engine init failed: ${e.message}", e)
                 withContext(Dispatchers.Main) {
@@ -126,31 +135,43 @@ class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardAct
             return
         }
         keyboardViewManager.setState(KeyboardViewManager.State.RECORDING)
-        // Request screenshot and start collecting screen text in parallel with speech.
-        // By the time ASR finishes, context is already ready — zero net latency.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            GemmaAccessibilityService.instance?.requestScreenshot()
-        }
+        requestScreenshotThrottled()
         modalityCollector.startCollection(scope)
-        // Launch the full pipeline; SpeechRecognizer starts listening immediately.
-        voiceJob = scope.launch {
-            try {
-                processVoiceInput()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "Voice processing error: ${e.message}", e)
-                keyboardViewManager.setState(
-                    KeyboardViewManager.State.ERROR,
-                    getString(R.string.status_error)
-                )
+
+        if (aiEngine?.supportsNativeAudio == true) {
+            // Native audio path: AudioRecorder captures PCM; processing starts on onMicUp.
+            audioRecorder.startRecording()
+        } else {
+            // SpeechRecognizer path: pipeline starts listening immediately.
+            voiceJob = scope.launch {
+                try {
+                    processVoiceInput()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "Voice processing error: ${e.message}", e)
+                    keyboardViewManager.setState(KeyboardViewManager.State.ERROR, getString(R.string.status_error))
+                }
             }
         }
     }
 
     override fun onMicUp() {
-        // Signals end-of-speech to the recognizer; onResults() resumes the pipeline.
-        speechRecognizer?.stopListening()
+        if (aiEngine?.supportsNativeAudio == true) {
+            // Stop PCM capture and hand off to the native audio pipeline.
+            voiceJob = scope.launch {
+                try {
+                    processNativeAudioInput()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "Native audio processing error: ${e.message}", e)
+                    keyboardViewManager.setState(KeyboardViewManager.State.ERROR, getString(R.string.status_error))
+                }
+            }
+        } else {
+            speechRecognizer?.stopListening()
+        }
     }
 
     override fun onDeletePressed() {
@@ -163,10 +184,9 @@ class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardAct
         )
     }
 
-    // ── Core voice-input pipeline ─────────────────────────────────────────────
+    // ── SpeechRecognizer pipeline ─────────────────────────────────────────────
 
     private suspend fun processVoiceInput() {
-        // 1. Start recognizer immediately — user is already speaking.
         val rawAsr = recognizeSpeech()
         if (rawAsr.isBlank()) {
             keyboardViewManager.setState(KeyboardViewManager.State.IDLE)
@@ -174,12 +194,8 @@ class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardAct
         }
         Log.d(TAG, "ASR result: $rawAsr")
 
-        // 2. Await context collected in parallel during speech — typically already done.
         val engine = aiEngine ?: run {
-            keyboardViewManager.setState(
-                KeyboardViewManager.State.ERROR,
-                getString(R.string.status_model_missing)
-            )
+            keyboardViewManager.setState(KeyboardViewManager.State.ERROR, getString(R.string.status_model_missing))
             modalityCollector.cancel()
             return
         }
@@ -187,11 +203,7 @@ class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardAct
         val hints = withContext(Dispatchers.IO) { dictionary.getHints() }
         Log.d(TAG, "Modality: ${ctx.state} | screenText=${ctx.screenText.length}ch | bitmap=${ctx.screenshot != null}")
 
-        // 3. AI correction.
-        keyboardViewManager.setState(
-            KeyboardViewManager.State.PROCESSING,
-            getString(R.string.status_correcting)
-        )
+        keyboardViewManager.setState(KeyboardViewManager.State.PROCESSING, getString(R.string.status_correcting))
         val result = withContext(Dispatchers.IO) {
             engine.transcribe(
                 TranscriptionRequest(
@@ -204,78 +216,127 @@ class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardAct
         }
         Log.d(TAG, "Corrected: ${result.text} | nouns: ${result.detectedNouns}")
 
-        // 4. Commit text.
+        commitResult(result)
+        modalityCollector.releaseBitmap(ctx)
+        keyboardViewManager.setState(KeyboardViewManager.State.IDLE)
+    }
+
+    // ── Native audio pipeline ─────────────────────────────────────────────────
+
+    private suspend fun processNativeAudioInput() {
+        keyboardViewManager.setState(KeyboardViewManager.State.PROCESSING, getString(R.string.status_processing))
+        val pcm = audioRecorder.stopAndGet()
+        if (pcm.isEmpty()) {
+            keyboardViewManager.setState(KeyboardViewManager.State.IDLE)
+            return
+        }
+        Log.d(TAG, "Native audio: ${pcm.size} samples captured")
+
+        val engine = aiEngine ?: run {
+            keyboardViewManager.setState(KeyboardViewManager.State.ERROR, getString(R.string.status_model_missing))
+            modalityCollector.cancel()
+            return
+        }
+        val ctx = modalityCollector.awaitContext(engine.supportsVision)
+        val hints = withContext(Dispatchers.IO) { dictionary.getHints() }
+
+        keyboardViewManager.setState(KeyboardViewManager.State.PROCESSING, getString(R.string.status_correcting))
+        val result = withContext(Dispatchers.IO) {
+            engine.transcribeAudio(pcm, ctx.screenText, ctx.screenshot, hints)
+        }
+        Log.d(TAG, "Native audio result: ${result?.text} | nouns: ${result?.detectedNouns}")
+
+        if (result != null) {
+            commitResult(result)
+        } else {
+            // Engine returned null — audio API unexpectedly unavailable; show error.
+            keyboardViewManager.setState(KeyboardViewManager.State.ERROR, getString(R.string.status_error))
+        }
+        modalityCollector.releaseBitmap(ctx)
+        if (result != null) keyboardViewManager.setState(KeyboardViewManager.State.IDLE)
+    }
+
+    // ── Shared helpers ────────────────────────────────────────────────────────
+
+    private suspend fun commitResult(result: com.example.gemmakey.ai.TranscriptionResult) {
         if (result.text.isNotBlank()) {
             currentInputConnection?.commitText(result.text, 1)
             keyboardViewManager.showPreview(result.text)
         }
-
-        // 5. Persist detected nouns.
         if (result.detectedNouns.isNotEmpty()) {
             withContext(Dispatchers.IO) { dictionary.recordNouns(result.detectedNouns) }
         }
+    }
 
-        modalityCollector.releaseBitmap(ctx)
-        keyboardViewManager.setState(KeyboardViewManager.State.IDLE)
+    private fun requestScreenshotThrottled() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        val now = System.currentTimeMillis()
+        if (now - lastScreenshotRequestMs >= SCREENSHOT_THROTTLE_MS) {
+            GemmaAccessibilityService.instance?.requestScreenshot()
+            lastScreenshotRequestMs = now
+        }
     }
 
     // ── Speech recognition ────────────────────────────────────────────────────
 
     /**
-     * Starts [SpeechRecognizer] listening immediately and suspends until the
-     * recognizer delivers results.  The caller signals end-of-speech by calling
-     * [SpeechRecognizer.stopListening] (done in [onMicUp]).
-     *
-     * Returns the best-match string, or "" on any error.
+     * Starts [SpeechRecognizer] and suspends until results arrive or
+     * [RECOGNITION_TIMEOUT_MS] elapses (prevents indefinite hang on SR errors).
+     * End-of-speech is signalled by [SpeechRecognizer.stopListening] in [onMicUp].
      */
     @SuppressLint("MissingPermission")
-    private suspend fun recognizeSpeech(): String = withContext(Dispatchers.Main) {
-        suspendCancellableCoroutine { cont ->
-            speechRecognizer?.destroy()
-            val sr = SpeechRecognizer.createSpeechRecognizer(this@GemmaKeyIMEService)
-            speechRecognizer = sr
+    private suspend fun recognizeSpeech(): String =
+        withTimeoutOrNull(RECOGNITION_TIMEOUT_MS) {
+            withContext(Dispatchers.Main) {
+                suspendCancellableCoroutine { cont ->
+                    speechRecognizer?.destroy()
+                    val sr = SpeechRecognizer.createSpeechRecognizer(this@GemmaKeyIMEService)
+                    speechRecognizer = sr
 
-            sr.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) {
-                    // Update UI: recognizer is active and listening
-                    keyboardViewManager.setState(KeyboardViewManager.State.RECORDING)
-                }
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {}
-                override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() {
-                    keyboardViewManager.setState(
-                        KeyboardViewManager.State.PROCESSING,
-                        getString(R.string.status_recognizing)
-                    )
-                }
-                override fun onResults(results: Bundle?) {
-                    val text = results
-                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        ?.firstOrNull() ?: ""
-                    if (cont.isActive) cont.resume(text)
-                }
-                override fun onPartialResults(partial: Bundle?) {}
-                override fun onError(error: Int) {
-                    Log.w(TAG, "SpeechRecognizer error: $error")
-                    if (cont.isActive) cont.resume("")
-                }
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-            })
+                    sr.setRecognitionListener(object : RecognitionListener {
+                        override fun onReadyForSpeech(params: Bundle?) {
+                            keyboardViewManager.setState(KeyboardViewManager.State.RECORDING)
+                        }
+                        override fun onBeginningOfSpeech() {}
+                        override fun onRmsChanged(rmsdB: Float) {}
+                        override fun onBufferReceived(buffer: ByteArray?) {}
+                        override fun onEndOfSpeech() {
+                            keyboardViewManager.setState(
+                                KeyboardViewManager.State.PROCESSING,
+                                getString(R.string.status_recognizing)
+                            )
+                        }
+                        override fun onResults(results: Bundle?) {
+                            val text = results
+                                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                                ?.firstOrNull() ?: ""
+                            if (cont.isActive) cont.resume(text)
+                        }
+                        override fun onPartialResults(partial: Bundle?) {}
+                        override fun onError(error: Int) {
+                            Log.w(TAG, "SpeechRecognizer error: $error")
+                            if (cont.isActive) cont.resume("")
+                        }
+                        override fun onEvent(eventType: Int, params: Bundle?) {}
+                    })
 
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                    }
+                    sr.startListening(intent)
+
+                    cont.invokeOnCancellation {
+                        sr.stopListening()
+                        sr.destroy()
+                        speechRecognizer = null
+                    }
+                }
             }
-            sr.startListening(intent)
-
-            cont.invokeOnCancellation {
-                sr.stopListening()
-                sr.destroy()
-                speechRecognizer = null
-            }
+        } ?: run {
+            Log.w(TAG, "Speech recognition timed out after ${RECOGNITION_TIMEOUT_MS / 1000}s")
+            ""
         }
-    }
 }
