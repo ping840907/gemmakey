@@ -1,8 +1,9 @@
 package com.example.gemmakey
 
+import android.Manifest
 import android.annotation.SuppressLint
-import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.inputmethodservice.InputMethodService
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +13,7 @@ import android.speech.SpeechRecognizer
 import android.util.Log
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import androidx.core.content.ContextCompat
 import com.example.gemmakey.ai.AIEngine
 import com.example.gemmakey.ai.AIEngineFactory
 import com.example.gemmakey.ai.TranscriptionRequest
@@ -134,6 +136,20 @@ class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardAct
             )
             return
         }
+        // Gate on runtime permission — SpeechRecognizer and AudioRecord both need it.
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED) {
+            keyboardViewManager.setState(
+                KeyboardViewManager.State.ERROR,
+                getString(R.string.status_error)
+            )
+            Log.w(TAG, "RECORD_AUDIO permission not granted")
+            return
+        }
+        // Cancel any in-flight pipeline before starting a new one.
+        voiceJob?.cancel()
+        voiceJob = null
+
         keyboardViewManager.setState(KeyboardViewManager.State.RECORDING)
         requestScreenshotThrottled()
         modalityCollector.startCollection(scope)
@@ -227,14 +243,15 @@ class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardAct
         keyboardViewManager.setState(KeyboardViewManager.State.PROCESSING, getString(R.string.status_processing))
         val pcm = audioRecorder.stopAndGet()
         if (pcm.isEmpty()) {
+            modalityCollector.cancel()
             keyboardViewManager.setState(KeyboardViewManager.State.IDLE)
             return
         }
         Log.d(TAG, "Native audio: ${pcm.size} samples captured")
 
         val engine = aiEngine ?: run {
-            keyboardViewManager.setState(KeyboardViewManager.State.ERROR, getString(R.string.status_model_missing))
             modalityCollector.cancel()
+            keyboardViewManager.setState(KeyboardViewManager.State.ERROR, getString(R.string.status_model_missing))
             return
         }
         val ctx = modalityCollector.awaitContext(engine.supportsVision)
@@ -249,11 +266,13 @@ class GemmaKeyIMEService : InputMethodService(), KeyboardViewManager.KeyboardAct
         if (result != null) {
             commitResult(result)
         } else {
-            // Engine returned null — audio API unexpectedly unavailable; show error.
+            // Engine returned null — audio API unexpectedly unavailable at runtime.
+            Log.w(TAG, "transcribeAudio returned null; audio API not available in this SDK build")
             keyboardViewManager.setState(KeyboardViewManager.State.ERROR, getString(R.string.status_error))
         }
         modalityCollector.releaseBitmap(ctx)
-        if (result != null) keyboardViewManager.setState(KeyboardViewManager.State.IDLE)
+        // Always return to IDLE so the user can retry without reopening the keyboard.
+        keyboardViewManager.setState(KeyboardViewManager.State.IDLE)
     }
 
     // ── Shared helpers ────────────────────────────────────────────────────────

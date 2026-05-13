@@ -18,44 +18,49 @@ An Android voice-first IME (input method / keyboard) that uses **Gemma 4 E2B** r
 | Context window | 128 K tokens |
 | Recommended device | 6 GB RAM+, Pixel 8 or equivalent NPU/DSP device |
 
-> **Note on native multimodality**: Gemma 4 E2B is built with native support for text, image, and audio inputs — not via adapter layers.  The current `LiteRTEngine` implementation wires text + optional screenshot into the request; the image Contents API path is scaffolded and awaits confirmation of the exact `Conversation.sendMessageAsync(Content)` signature in LiteRT-LM v0.11.0 (see `TODO` in `LiteRTEngine.kt`).
+> **Native multimodality**: Gemma 4 E2B supports text, image, and audio inputs natively (not via adapter layers).  `LiteRTEngine` probes for image and audio overloads on `Conversation` at runtime via reflection — they activate automatically when the SDK exposes them, with silent text-only fallback until then.
 
 ---
 
 ## Architecture
 
 ```
-User presses mic
+User presses mic  (onMicDown)
+       │
+       ├─ [supportsNativeAudio=true]  AudioRecorder.startRecording()   ─────────┐
+       └─ [default]                   SpeechRecognizer.startListening()          │
+                                                                                  │
+       ╔══════════════════════════════════════════════════════╗                  │
+       ║  ModalityCollector.startCollection() — parallel      ║                  │
+       ║  Dispatchers.IO: AccessibilityService screen text    ║                  │
+       ║               + downscaled screenshot (224 × 224)    ║                  │
+       ╚══════════════════════════════════════════════════════╝                  │
+                                                                                  │
+User releases mic  (onMicUp)                                                     │
+       │                                                                          │
+       └──────────────────── stopListening() / stopAndGet() ◄────────────────────┘
        │
        ▼
- GemmaKeyIMEService  ──── onMicDown() ─────────────────────────────────┐
-       │                                                                 │
-       │  SpeechRecognizer.startListening()          ModalityCollector.startCollection()
-       │  (user speaks)                              (parallel: screen text + screenshot)
-       │
- User releases mic
-       │
-       ▼
- SpeechRecognizer.onResults()  →  raw ASR text
+ raw text (SR)  OR  PCM ShortArray (native audio)
        │
        ▼
  ModalityCollector.awaitContext(supportsVision)
-       │  (typically already complete — zero latency)
+       │  (typically already resolved — zero added latency)
        │
-       ├─ FULL         → ASR + screen text + screenshot  (LiteRT/Gemma 4 E2B)
-       ├─ TEXT_CONTEXT → ASR + screen text               (any engine, no bitmap)
-       └─ MINIMAL      → ASR only                        (engine not ready / collection failed)
+       ├─ FULL         → text/PCM + screen text + screenshot  (LiteRTEngine)
+       ├─ TEXT_CONTEXT → text/PCM + screen text               (any engine, no bitmap)
+       └─ MINIMAL      → text/PCM only                        (collection failed)
        │
        ▼
- AIEngine.transcribe(TranscriptionRequest)
-       │  LiteRTEngine  (Gemma 4 E2B)    — default
-       │  AICoreEngine  (Gemini Nano)    — if AICore / Pixel 8+ detected
+ AIEngine.transcribe()  OR  AIEngine.transcribeAudio()
+       │  LiteRTEngine  (Gemma 4 E2B)  — default; vision + audio probed at runtime
+       │  AICoreEngine  (Gemini Nano)  — if AICore / Pixel 8+ detected; text-only
        │
        ▼
  InputConnection.commitText()  →  text appears in focused field
        │
        ▼
- CustomDictionary.recordNouns()  →  Room DB persists unusual terms for future hints
+ CustomDictionary.recordNouns()  →  Room DB persists detected terms for future hints
 ```
 
 ---
@@ -74,7 +79,7 @@ User presses mic
 | `ai/LiteRTEngine` | Gemma 4 E2B via LiteRT-LM (`supportsVision = true`) |
 | `ai/AICoreEngine` | Gemini Nano via AICore (`supportsVision = false`, text-only SDK) |
 | `ai/PromptBuilder` | Zero-shot correction + noun-extraction prompts |
-| `audio/AudioRecorder` | `AudioRecord` wrapper with daemon drain thread (available for raw PCM if needed) |
+| `audio/AudioRecorder` | `AudioRecord` wrapper with daemon drain thread; used by native audio path |
 | `screen/ScreenContextProvider` | Aggregates accessibility text + downscaled screenshot (max 224 × 224) |
 | `dict/CustomDictionary` | Room database; stores unusual proper nouns to improve future transcriptions |
 
@@ -162,31 +167,29 @@ AICore detection checks for the `com.google.android.aicore` package and the `and
 
 ### Completed
 
-- [x] Root `build.gradle.kts` restructured with correct plugin version declarations
-- [x] Removed `ndk.abiFilters` / `splits.abi` conflict (AGP rejects both simultaneously)
-- [x] `kotlinOptions { jvmTarget = "17" }` — `compilerOptions` block reverted (KMP only)
-- [x] `AICoreEngine` — fixed `GenerativeAIException`, `DownloadCallback` signatures, `DownloadConfig` constructor, `generateContentStream()` Flow API, `prepareInferenceEngine()`
-- [x] `LiteRTEngine` — `ConversationConfig` parameter, `use {}` pattern for `Conversation`, `companion object MODEL_FILENAME`, `engine?.close()` in `release()`
-- [x] `GemmaAccessibilityService` — `AccessibilityNodeInfo` child recycling memory leak fixed
-- [x] `AudioRecorder` — daemon drain thread prevents `AudioRecord` buffer overflow beyond ~2 s
-- [x] `GemmaKeyIMEService` — pipeline starts at `onMicDown()` (not after); `stopListening()` on `onMicUp()`; safe null checks replace `!!`
-- [x] `SetupActivity` — uses `LiteRTEngine.MODEL_FILENAME` companion constant
-- [x] `ModalityCollector` — zero-latency parallel context collection state machine
-- [x] `AIEngine.supportsVision` — interface property; `LiteRTEngine = true`, `AICoreEngine = false`
-- [x] `gradle.properties`, `gradle-wrapper.properties`, `gradlew` — project infrastructure
+| Area | What was done |
+|---|---|
+| **Build** | Root `build.gradle.kts` fixed; `ndk.abiFilters`/`splits.abi` conflict removed; `kotlinOptions` restored (`compilerOptions` is KMP-only) |
+| **AICoreEngine** | Fixed `GenerativeAIException`, `DownloadCallback` signatures, `DownloadConfig` constructor, `generateContentStream()` Flow, `prepareInferenceEngine()`, `model?.close()` |
+| **LiteRTEngine** | `ConversationConfig` parameter, `Conversation.use {}`, `companion object MODEL_FILENAME`, `engine?.close()`; reflection probes for vision/audio methods cached after `prepare()` |
+| **GemmaAccessibilityService** | `AccessibilityNodeInfo` child recycling memory leak fixed |
+| **AudioRecorder** | Daemon drain thread prevents `AudioRecord` buffer overflow beyond ~2 s |
+| **GemmaKeyIMEService** | Pipeline starts at `onMicDown()`, not after; `voiceJob` cancelled before re-launch; RECORD_AUDIO permission checked before mic; SR timeout (15 s); screenshot throttle (3 s); native audio path via `AudioRecorder` (mutually exclusive with SR) |
+| **ModalityCollector** | Zero-latency parallel context collection; `MINIMAL` / `TEXT_CONTEXT` / `FULL` state machine |
+| **AIEngine interface** | `supportsVision`, `supportsNativeAudio`, `transcribeAudio()` added; `LiteRTEngine` implements all; `AICoreEngine` is text-only |
+| **PromptBuilder** | 4×4 pixel visual descriptor from screenshot; `buildAudioContext()` for native audio path |
+| **SetupActivity** | RECORD_AUDIO runtime permission flow (`ActivityResultContracts.RequestPermission`); "Don't ask again" redirects to app settings |
+| **AIEngineFactory** | AICore package verified (`com.google.android.aicore`); package list + service check |
+| **Infrastructure** | `gradle.properties`, `gradle-wrapper.properties`, `gradlew`, `.gitignore` |
 
-### Completed (continued)
+### Known issues
 
-- [x] **RECORD_AUDIO runtime permission**: `SetupActivity` now uses `ActivityResultContracts.RequestPermission`; button shown only while permission is absent; "Don't ask again" case redirects to app settings.
-- [x] **AICore package name**: verified as `com.google.android.aicore` (Pixel 8+, Android 14+); `isAICoreAvailable()` refactored to iterate a package list and separately verify the inference service is reachable.
-- [x] **Visual context via text API**: `PromptBuilder.build()` samples a 4×4 pixel grid from `screenBitmap` to derive a compact descriptor (theme, dominant hue, brightness) appended to the prompt — gives the model app-context signal with zero extra tokens compared to embedding raw image data.
-
-### Completed (continued)
-
-- [x] **Native image token injection**: `LiteRTEngine.collectMaybeVision()` probes `Conversation.sendMessageAsync` at runtime for a `(String, List<Bitmap>)` or `(String, Bitmap)` overload via reflection.  When the SDK exposes the method it activates automatically; otherwise falls back to the text visual descriptor with no code change required.
-- [x] **Native audio input**: `AIEngine.supportsNativeAudio` + `transcribeAudio()` interface added.  `LiteRTEngine` probes `Conversation` for `sendAudioAsync` / `transcribeAudio` / `generateFromAudio` at runtime.  `GemmaKeyIMEService` routes `onMicDown`/`onMicUp` to `AudioRecorder` (PCM, 16 kHz, 16-bit) when `supportsNativeAudio = true`, and to `SpeechRecognizer` otherwise — the two paths are mutually exclusive so they never conflict for the microphone.
-- [x] **Speech recognition timeout**: `recognizeSpeech()` wrapped in `withTimeoutOrNull(15 s)` — prevents the UI from hanging indefinitely if `SpeechRecognizer` never delivers `onResults`.
-- [x] **Screenshot throttle**: `requestScreenshotThrottled()` helper limits screenshot captures to once per 3 s, preventing redundant AccessibilityService calls when the user taps rapidly between text fields.
+| # | Severity | Description |
+|---|---|---|
+| 1 | Medium | `isAICoreAvailable()` uses the unofficial `"android_app_intelligence"` system service string — if Google renames it, AICore detection silently falls back to LiteRT on a capable device |
+| 2 | Low | `GemmaAccessibilityService` fires `refreshScreenText()` on every `TYPE_WINDOW_CONTENT_CHANGED` event (can be very frequent in apps with live updates); consider debouncing by ~300 ms |
+| 3 | ~~Low~~ | ~~`AICoreEngine.transcribeAudio()` used a fully-qualified `android.graphics.Bitmap?` — fixed, `import android.graphics.Bitmap` added~~ |
+| 4 | Info | When `SpeechRecognizer` returns an empty string (no speech detected), the pipeline transitions straight to IDLE with no user feedback; a brief "No speech detected" status would improve UX |
 
 ---
 

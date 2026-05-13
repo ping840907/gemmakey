@@ -1,6 +1,7 @@
 package com.example.gemmakey.ai
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.util.Log
 import com.google.android.ai.edge.aicore.DownloadCallback
 import com.google.android.ai.edge.aicore.DownloadConfig
@@ -117,7 +118,7 @@ class AICoreEngine(private val context: Context) : AIEngine {
     override suspend fun transcribeAudio(
         pcm: ShortArray,
         screenText: String,
-        screenBitmap: android.graphics.Bitmap?,
+        screenBitmap: Bitmap?,
         dictionaryHints: List<String>
     ): TranscriptionResult? = null  // AICore SDK does not expose a PCM audio API.
 

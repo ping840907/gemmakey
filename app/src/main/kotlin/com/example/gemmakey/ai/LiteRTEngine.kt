@@ -50,10 +50,13 @@ class LiteRTEngine(private val context: Context) : AIEngine {
     // Gemma 4 E2B is natively multimodal (text + image + audio).
     override val supportsVision: Boolean = true
 
-    // supportsNativeAudio is dynamic: true only after prepare() succeeds AND the
-    // SDK exposes a PCM audio method on Conversation.
-    override val supportsNativeAudio: Boolean
-        get() = engine != null && findAudioMethod() != null
+    // Cached once in prepare() — reflection is expensive; result never changes for
+    // a given SDK version at runtime.
+    private var cachedVisionMethod: java.lang.reflect.Method? = null
+    private var cachedAudioMethod: java.lang.reflect.Method? = null
+    private var nativeAudioCached = false
+
+    override val supportsNativeAudio: Boolean get() = nativeAudioCached
 
     private val TAG = "LiteRTEngine"
 
@@ -90,8 +93,12 @@ class LiteRTEngine(private val context: Context) : AIEngine {
         eng.initialize()
 
         engine = eng
+        // Cache reflection results once — avoids per-call method scanning.
+        cachedVisionMethod = findVisionMethod()
+        cachedAudioMethod = findAudioMethod()
+        nativeAudioCached = cachedAudioMethod != null
         isReady = true
-        Log.i(TAG, "LiteRT-LM Engine ready | vision=${supportsVision} | nativeAudio=${supportsNativeAudio}")
+        Log.i(TAG, "LiteRT-LM Engine ready | vision=${supportsVision} | nativeAudio=$nativeAudioCached")
     }
 
     // ── Inference — text (+ optional vision probe) ────────────────────────────
@@ -135,7 +142,7 @@ class LiteRTEngine(private val context: Context) : AIEngine {
         dictionaryHints: List<String>
     ): TranscriptionResult? = withContext(Dispatchers.IO) {
         val eng = engine ?: return@withContext null
-        val method = findAudioMethod() ?: return@withContext null
+        val method = cachedAudioMethod ?: return@withContext null
 
         val contextPrompt = PromptBuilder.buildAudioContext(screenText, screenBitmap, dictionaryHints)
         val pcmArg: Any = if (method.parameterTypes[0] == ByteArray::class.java) shortsToBytes(pcm) else pcm
@@ -169,6 +176,9 @@ class LiteRTEngine(private val context: Context) : AIEngine {
     override fun release() {
         engine?.close()
         engine = null
+        cachedVisionMethod = null
+        cachedAudioMethod = null
+        nativeAudioCached = false
         isReady = false
         System.gc()
         Log.d(TAG, "LiteRTEngine released")
@@ -223,7 +233,7 @@ class LiteRTEngine(private val context: Context) : AIEngine {
     /** Collects a streaming response, injecting the bitmap via the vision probe if available. */
     private suspend fun collectMaybeVision(conv: Conversation, prompt: String, bitmap: Bitmap?): String {
         if (bitmap != null) {
-            val method = findVisionMethod()
+            val method = cachedVisionMethod
             if (method != null) {
                 val result = runCatching {
                     val imgArg: Any =
