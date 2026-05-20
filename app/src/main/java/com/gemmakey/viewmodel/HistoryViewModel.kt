@@ -22,7 +22,8 @@ data class HistoryUiState(
     val totalExpense: Double = 0.0,
     val totalIncome: Double = 0.0,
     val categoryTotals: List<CategoryTotal> = emptyList(),
-    val isLoading: Boolean = false
+    val isLoading: Boolean = false,
+    val pendingDelete: ExpenseEntry? = null
 )
 
 @HiltViewModel
@@ -61,6 +62,21 @@ class HistoryViewModel @Inject constructor(
     fun nextMonth() = loadMonth(_uiState.value.currentMonth.plusMonths(1))
 
     fun deleteEntry(entry: ExpenseEntry) {
-        viewModelScope.launch { repository.delete(entry) }
+        viewModelScope.launch {
+            _uiState.update { it.copy(pendingDelete = entry) }
+            repository.delete(entry)
+        }
+    }
+
+    fun undoDelete() {
+        viewModelScope.launch {
+            val entry = _uiState.value.pendingDelete ?: return@launch
+            _uiState.update { it.copy(pendingDelete = null) }
+            repository.save(entry)
+        }
+    }
+
+    fun clearPendingDelete() {
+        _uiState.update { it.copy(pendingDelete = null) }
     }
 }

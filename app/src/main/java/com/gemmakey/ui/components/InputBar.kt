@@ -24,10 +24,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.gemmakey.utils.ImageUtils
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun InputBar(
@@ -37,14 +40,16 @@ fun InputBar(
     onImageSelected: (Uri) -> Unit
 ) {
     val context = LocalContext.current
-    var text     by remember { mutableStateOf("") }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val coroutineScope = rememberCoroutineScope()
+
+    var text by remember { mutableStateOf("") }
     var isListening by remember { mutableStateOf(false) }
     var showImageOptions by remember { mutableStateOf(false) }
+    var voiceError by remember { mutableStateOf<String?>(null) }
 
-    // Camera URI holder
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
 
-    // Speech recognizer (lazy, reused)
     val speechRecognizer = remember {
         if (SpeechRecognizer.isRecognitionAvailable(context))
             SpeechRecognizer.createSpeechRecognizer(context)
@@ -52,12 +57,23 @@ fun InputBar(
     }
     DisposableEffect(Unit) { onDispose { speechRecognizer?.destroy() } }
 
-    // Permission launchers
     val audioPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted -> if (granted) startListening(speechRecognizer, context) { result ->
-        isListening = false; onVoiceResult(result)
-    }}
+    ) { granted ->
+        if (granted) {
+            isListening = true
+            startListening(
+                recognizer = speechRecognizer,
+                context = context,
+                onResult = { result -> isListening = false; onVoiceResult(result) },
+                onError = { msg ->
+                    isListening = false
+                    voiceError = msg
+                    coroutineScope.launch { delay(3000); voiceError = null }
+                }
+            )
+        }
+    }
 
     val cameraPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -74,6 +90,34 @@ fun InputBar(
     ) { uri -> uri?.let { onImageSelected(it) } }
 
     Column {
+        // Voice error strip
+        AnimatedVisibility(
+            visible = voiceError != null,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.errorContainer)
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    Icons.Default.ErrorOutline,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onErrorContainer
+                )
+                Text(
+                    voiceError ?: "",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
+        }
+
         // Image option row (expandable)
         AnimatedVisibility(visible = showImageOptions) {
             Row(
@@ -111,7 +155,6 @@ fun InputBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Image attach button
             IconButton(onClick = { showImageOptions = !showImageOptions }) {
                 Icon(
                     Icons.Default.AddPhotoAlternate,
@@ -121,7 +164,6 @@ fun InputBar(
                 )
             }
 
-            // Text field
             TextField(
                 value = text,
                 onValueChange = { text = it },
@@ -137,7 +179,6 @@ fun InputBar(
                 maxLines = 4
             )
 
-            // Voice / Send button
             if (text.isBlank()) {
                 // Voice button
                 Box(
@@ -160,9 +201,16 @@ fun InputBar(
                             ) == PackageManager.PERMISSION_GRANTED
                             if (hasPerm) {
                                 isListening = true
-                                startListening(speechRecognizer, context) { result ->
-                                    isListening = false; onVoiceResult(result)
-                                }
+                                startListening(
+                                    recognizer = speechRecognizer,
+                                    context = context,
+                                    onResult = { result -> isListening = false; onVoiceResult(result) },
+                                    onError = { msg ->
+                                        isListening = false
+                                        voiceError = msg
+                                        coroutineScope.launch { delay(3000); voiceError = null }
+                                    }
+                                )
                             } else {
                                 audioPermission.launch(Manifest.permission.RECORD_AUDIO)
                             }
@@ -190,7 +238,11 @@ fun InputBar(
                 ) {
                     IconButton(
                         onClick = {
-                            if (!isGenerating) { onSendText(text); text = "" }
+                            if (!isGenerating) {
+                                onSendText(text)
+                                text = ""
+                                keyboardController?.hide()
+                            }
                         }
                     ) {
                         Icon(
@@ -222,7 +274,8 @@ private fun ImageOptionChip(
 private fun startListening(
     recognizer: SpeechRecognizer?,
     context: android.content.Context,
-    onResult: (String) -> Unit
+    onResult: (String) -> Unit,
+    onError: (String) -> Unit = {}
 ) {
     recognizer ?: return
     val intent = android.content.Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -236,7 +289,18 @@ private fun startListening(
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             onResult(matches?.firstOrNull() ?: "")
         }
-        override fun onError(error: Int) { onResult("") }
+        override fun onError(error: Int) {
+            val msg = when (error) {
+                SpeechRecognizer.ERROR_NETWORK,
+                SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "網路錯誤，請檢查連線"
+                SpeechRecognizer.ERROR_NO_MATCH        -> "未偵測到語音，請再試一次"
+                SpeechRecognizer.ERROR_SPEECH_TIMEOUT  -> "語音逾時，請再試一次"
+                SpeechRecognizer.ERROR_AUDIO           -> "麥克風錯誤"
+                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "語音辨識忙碌中"
+                else                                   -> "語音辨識失敗"
+            }
+            onError(msg)
+        }
         override fun onReadyForSpeech(params: Bundle?) {}
         override fun onBeginningOfSpeech() {}
         override fun onRmsChanged(rmsdB: Float) {}

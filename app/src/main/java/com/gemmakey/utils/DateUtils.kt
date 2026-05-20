@@ -19,4 +19,6 @@ object DateUtils {
 
     fun LocalDate.weekdayChinese(): String =
         dayOfWeek.getDisplayName(TextStyle.FULL, Locale.TRADITIONAL_CHINESE)
+
+    fun Double.toFormattedAmount(): String = String.format("%,d", this.toLong())
 }

@@ -3,6 +3,8 @@ package com.gemmakey.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -82,7 +84,9 @@ fun ConfirmationDialog(
             tonalElevation = 8.dp
         ) {
             Column(
-                modifier = Modifier.padding(24.dp),
+                modifier = Modifier
+                    .padding(24.dp)
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 // ── 標題 ─────────────────────────────────────────────────────
@@ -145,34 +149,35 @@ fun ConfirmationDialog(
                     append(selectedDate.format(DateTimeFormatter.ofPattern("yyyy年M月d日")))
                     if (isToday) append("（今天）")
                 }
-                OutlinedTextField(
-                    value = dateLabel,
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("日期") },
-                    leadingIcon = {
-                        Icon(
-                            Icons.Default.CalendarMonth,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    },
-                    trailingIcon = {
-                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = null)
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { showDatePicker = true },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        // 讓欄位看起來可互動
-                        disabledTextColor     = MaterialTheme.colorScheme.onSurface,
-                        disabledBorderColor   = MaterialTheme.colorScheme.outline,
-                        disabledLabelColor    = MaterialTheme.colorScheme.onSurfaceVariant,
-                        disabledLeadingIconColor  = MaterialTheme.colorScheme.primary,
-                        disabledTrailingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    ),
-                    enabled = false
-                )
+                Box {
+                    OutlinedTextField(
+                        value = dateLabel,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("日期") },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.CalendarMonth,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        },
+                        trailingIcon = {
+                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = null)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            disabledTextColor             = MaterialTheme.colorScheme.onSurface,
+                            disabledBorderColor           = MaterialTheme.colorScheme.outline,
+                            disabledLabelColor            = MaterialTheme.colorScheme.onSurfaceVariant,
+                            disabledLeadingIconColor      = MaterialTheme.colorScheme.primary,
+                            disabledTrailingIconColor     = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ),
+                        enabled = false
+                    )
+                    // Transparent overlay ensures the click always reaches the date picker
+                    Box(modifier = Modifier.matchParentSize().clickable { showDatePicker = true })
+                }
 
                 // ── 類別 ──────────────────────────────────────────────────────
                 ExposedDropdownMenuBox(

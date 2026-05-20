@@ -1,5 +1,6 @@
 package com.gemmakey.ui.screens
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -14,6 +15,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -23,6 +25,7 @@ import com.gemmakey.ui.components.MonthNavBar
 import com.gemmakey.ui.theme.GreenIncome
 import com.gemmakey.ui.theme.RedExpense
 import com.gemmakey.utils.DateUtils.toDisplay
+import com.gemmakey.utils.DateUtils.toFormattedAmount
 import com.gemmakey.viewmodel.HistoryViewModel
 import java.time.LocalDate
 import java.time.YearMonth
@@ -30,44 +33,71 @@ import java.time.YearMonth
 @Composable
 fun HistoryScreen(viewModel: HistoryViewModel = hiltViewModel()) {
     val state by viewModel.uiState.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
 
-    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-
-        // Month navigator + summary card
-        MonthNavBar(
-            label = "${state.currentMonth.year}年 ${state.currentMonth.monthValue}月",
-            onPrev = viewModel::prevMonth,
-            onNext = viewModel::nextMonth,
-            canGoNext = state.currentMonth < YearMonth.now()
-        )
-
-        MonthlySummaryCard(
-            totalExpense = state.totalExpense,
-            totalIncome  = state.totalIncome
-        )
-
-        // Grouped by date
-        if (state.entries.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("尚無記帳記錄", style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+    LaunchedEffect(state.pendingDelete) {
+        state.pendingDelete?.let { entry ->
+            val result = snackbarHostState.showSnackbar(
+                message = "已刪除「${entry.description}」",
+                actionLabel = "復原",
+                duration = SnackbarDuration.Short
+            )
+            when (result) {
+                SnackbarResult.ActionPerformed -> viewModel.undoDelete()
+                SnackbarResult.Dismissed       -> viewModel.clearPendingDelete()
             }
-        } else {
-            val grouped = remember(state.entries) {
-                state.entries.groupBy { it.date }.toSortedMap(compareByDescending { it })
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+
+            MonthNavBar(
+                label = "${state.currentMonth.year}年 ${state.currentMonth.monthValue}月",
+                onPrev = viewModel::prevMonth,
+                onNext = viewModel::nextMonth,
+                canGoNext = state.currentMonth < YearMonth.now()
+            )
+
+            if (state.isLoading) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
-            LazyColumn(
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                grouped.forEach { (date, entries) ->
-                    item(key = date.toEpochDay()) { DateHeader(date) }
-                    items(entries, key = { it.id }) { entry ->
-                        ExpenseRow(entry = entry, onDelete = { viewModel.deleteEntry(entry) })
+
+            MonthlySummaryCard(
+                totalExpense = state.totalExpense,
+                totalIncome  = state.totalIncome
+            )
+
+            if (state.entries.isEmpty() && !state.isLoading) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("尚無記帳記錄", style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                val grouped = remember(state.entries) {
+                    state.entries.groupBy { it.date }.toSortedMap(compareByDescending { it })
+                }
+                LazyColumn(
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    grouped.forEach { (date, entries) ->
+                        item(key = date.toEpochDay()) { DateHeader(date) }
+                        items(entries, key = { it.id }) { entry ->
+                            SwipeableExpenseRow(
+                                entry = entry,
+                                onDelete = { viewModel.deleteEntry(entry) }
+                            )
+                        }
                     }
                 }
             }
         }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
     }
 }
 
@@ -101,7 +131,7 @@ private fun SummaryItem(label: String, amount: Double, color: androidx.compose.u
         Text(label, style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onPrimaryContainer)
         Text(
-            text = "NT\$ ${amount.toLong()}",
+            text = "NT\$ ${amount.toFormattedAmount()}",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
             color = color
@@ -119,24 +149,49 @@ private fun DateHeader(date: LocalDate) {
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SwipeableExpenseRow(entry: ExpenseEntry, onDelete: () -> Unit) {
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            if (value == SwipeToDismissBoxValue.EndToStart) { onDelete(); true } else false
+        },
+        positionalThreshold = { it * 0.4f }
+    )
+
+    SwipeToDismissBox(
+        state = dismissState,
+        enableDismissFromStartToEnd = false,
+        backgroundContent = {
+            val color by animateColorAsState(
+                targetValue = if (dismissState.targetValue == SwipeToDismissBoxValue.EndToStart)
+                    MaterialTheme.colorScheme.errorContainer else Color.Transparent,
+                label = "swipe_bg"
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(color),
+                contentAlignment = Alignment.CenterEnd
+            ) {
+                if (dismissState.targetValue == SwipeToDismissBoxValue.EndToStart) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "刪除",
+                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.padding(end = 20.dp)
+                    )
+                }
+            }
+        }
+    ) {
+        ExpenseRow(entry = entry, onDelete = onDelete)
+    }
+}
+
 @Composable
 private fun ExpenseRow(entry: ExpenseEntry, onDelete: () -> Unit) {
-    var showDeleteDialog by remember { mutableStateOf(false) }
-
-    if (showDeleteDialog) {
-        AlertDialog(
-            onDismissRequest = { showDeleteDialog = false },
-            title = { Text("刪除記帳") },
-            text = { Text("確定要刪除「${entry.description}」嗎？") },
-            confirmButton = {
-                TextButton(onClick = { onDelete(); showDeleteDialog = false }) { Text("刪除") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteDialog = false }) { Text("取消") }
-            }
-        )
-    }
-
     Surface(
         modifier = Modifier.fillMaxWidth().animateContentSize(),
         shape = RoundedCornerShape(12.dp),
@@ -147,7 +202,6 @@ private fun ExpenseRow(entry: ExpenseEntry, onDelete: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Category emoji
             Box(
                 modifier = Modifier
                     .size(40.dp)
@@ -158,22 +212,20 @@ private fun ExpenseRow(entry: ExpenseEntry, onDelete: () -> Unit) {
                 Text(entry.category.emoji, style = MaterialTheme.typography.titleMedium)
             }
 
-            // Description + category
             Column(modifier = Modifier.weight(1f)) {
                 Text(entry.description, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
                 Text(entry.category.displayName, style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
-            // Amount
             Text(
-                text = "${if (entry.type == ExpenseType.INCOME) "+" else "-"}NT\$${entry.amount.toLong()}",
+                text = "${if (entry.type == ExpenseType.INCOME) "+" else "-"}NT\$${entry.amount.toFormattedAmount()}",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = if (entry.type == ExpenseType.INCOME) GreenIncome else RedExpense
             )
 
-            IconButton(onClick = { showDeleteDialog = true }, modifier = Modifier.size(32.dp)) {
+            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
                 Icon(Icons.Default.Delete, contentDescription = "刪除",
                     modifier = Modifier.size(18.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant)

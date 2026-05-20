@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.gemmakey.data.database.CategoryTotal
@@ -19,6 +20,7 @@ import com.gemmakey.model.ExpenseCategory
 import com.gemmakey.ui.components.MonthNavBar
 import com.gemmakey.ui.theme.GreenIncome
 import com.gemmakey.ui.theme.RedExpense
+import com.gemmakey.utils.DateUtils.toFormattedAmount
 import com.gemmakey.viewmodel.HistoryViewModel
 import java.time.YearMonth
 
@@ -32,7 +34,6 @@ fun StatisticsScreen(viewModel: HistoryViewModel = hiltViewModel()) {
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
-            // Month selector
             MonthNavBar(
                 label = "${state.currentMonth.year}年 ${state.currentMonth.monthValue}月",
                 onPrev = viewModel::prevMonth,
@@ -42,7 +43,6 @@ fun StatisticsScreen(viewModel: HistoryViewModel = hiltViewModel()) {
         }
 
         item {
-            // Income vs Expense donut-like summary
             IncomeExpenseSummary(
                 totalExpense = state.totalExpense,
                 totalIncome  = state.totalIncome
@@ -59,6 +59,24 @@ fun StatisticsScreen(viewModel: HistoryViewModel = hiltViewModel()) {
             }
             items(state.categoryTotals) { catTotal ->
                 CategoryBar(catTotal = catTotal, maxAmount = state.categoryTotals.first().total)
+            }
+        } else {
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("📊", style = MaterialTheme.typography.displaySmall)
+                    Text(
+                        text = "本月尚無支出記錄",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
         }
     }
@@ -83,7 +101,7 @@ private fun IncomeExpenseSummary(totalExpense: Double, totalIncome: Double) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "${if (balance >= 0) "+" else ""}NT\$ ${balance.toLong()}",
+                text = "${if (balance >= 0) "+" else ""}NT\$ ${balance.toFormattedAmount()}",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
                 color = if (balance >= 0) GreenIncome else RedExpense
@@ -101,7 +119,7 @@ private fun FinancialBlock(label: String, amount: Double, color: Color) {
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(4.dp))
         Text(
-            text = "NT\$ ${amount.toLong()}",
+            text = "NT\$ ${amount.toFormattedAmount()}",
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.SemiBold,
             color = color
@@ -127,11 +145,10 @@ private fun CategoryBar(catTotal: CategoryTotal, maxAmount: Double) {
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(category.displayName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                Text("NT\$ ${catTotal.total.toLong()}", style = MaterialTheme.typography.bodyMedium,
+                Text("NT\$ ${catTotal.total.toFormattedAmount()}", style = MaterialTheme.typography.bodyMedium,
                     color = RedExpense, fontWeight = FontWeight.SemiBold)
             }
             Spacer(Modifier.height(4.dp))
-            // Progress bar
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
