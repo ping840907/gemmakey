@@ -2,6 +2,7 @@ package com.gemmakey.ai
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.os.Build
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
@@ -80,23 +81,41 @@ class GemmaInferenceManager @Inject constructor(
     // ── 後端選擇（對照 Gallery Accelerator enum：CPU / GPU / NPU）────────────
 
     private suspend fun tryCreateEngine(modelPath: String): Pair<Engine?, InferenceBackend> {
-        // NPU is intentionally skipped: LiteRT-LM 0.11.0 calls std::terminate() (SIGABRT)
-        // via bad_variant_access on devices without Qualcomm QNN / MediaTek NeuroPilot.
-        // A native SIGABRT cannot be caught by Kotlin runCatching, so we never attempt NPU.
+        // NPU: only attempt on Qualcomm / MediaTek SoCs (API 31 → Build.SOC_MANUFACTURER).
+        // LiteRT-LM 0.11.0 calls std::terminate() (bad_variant_access in -fno-exceptions)
+        // when the QNN / NeuroPilot runtime is absent — a native SIGABRT that Kotlin's
+        // runCatching cannot intercept. Skipping on other SoCs prevents the crash.
+        if (isNpuSocLikely()) {
+            runCatching {
+                buildEngine(
+                    modelPath,
+                    backend = Backend.NPU(
+                        nativeLibraryDir = context.applicationInfo.nativeLibraryDir
+                    )
+                )
+            }.onSuccess { return it to InferenceBackend.NPU }
+             .onFailure  { Log.w(TAG, "NPU unavailable: ${it.message}") }
+        }
 
-        // 1. GPU（OpenCL / Vulkan）
+        // GPU（OpenCL / Vulkan）
         runCatching {
             buildEngine(modelPath, backend = Backend.GPU())
         }.onSuccess { return it to InferenceBackend.GPU }
          .onFailure  { Log.w(TAG, "GPU unavailable: ${it.message}") }
 
-        // 2. CPU（XNNPACK）
+        // CPU（XNNPACK）
         runCatching {
             buildEngine(modelPath, backend = Backend.CPU())
         }.onSuccess { return it to InferenceBackend.CPU }
          .onFailure  { Log.e(TAG, "CPU also failed: ${it.message}") }
 
         return null to InferenceBackend.CPU
+    }
+
+    /** True on Qualcomm and MediaTek SoCs, which ship QNN / NeuroPilot NPU runtimes. */
+    private fun isNpuSocLikely(): Boolean {
+        val soc = Build.SOC_MANUFACTURER.lowercase()
+        return soc.contains("qualcomm") || soc.contains("mediatek")
     }
 
     private fun buildEngine(modelPath: String, backend: Backend): Engine {
