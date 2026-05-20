@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -21,6 +22,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.gemmakey.model.ExpenseEntry
 import com.gemmakey.model.ExpenseType
+import com.gemmakey.model.ParsedExpense
+import com.gemmakey.ui.components.ConfirmationDialog
 import com.gemmakey.ui.components.MonthNavBar
 import com.gemmakey.ui.theme.GreenIncome
 import com.gemmakey.ui.theme.RedExpense
@@ -34,6 +37,16 @@ import java.time.YearMonth
 fun HistoryScreen(viewModel: HistoryViewModel = hiltViewModel()) {
     val state by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    var showAddDialog by remember { mutableStateOf(false) }
+
+    if (showAddDialog) {
+        ConfirmationDialog(
+            parsed = ParsedExpense(),
+            rawInput = "",
+            onConfirm = { entry -> viewModel.saveEntry(entry); showAddDialog = false },
+            onDismiss = { showAddDialog = false }
+        )
+    }
 
     LaunchedEffect(state.pendingDelete) {
         state.pendingDelete?.let { entry ->
@@ -92,6 +105,16 @@ fun HistoryScreen(viewModel: HistoryViewModel = hiltViewModel()) {
                     }
                 }
             }
+        }
+
+        FloatingActionButton(
+            onClick = { showAddDialog = true },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 16.dp, bottom = 72.dp),
+            containerColor = MaterialTheme.colorScheme.primary
+        ) {
+            Icon(Icons.Default.Add, contentDescription = "手動新增", tint = MaterialTheme.colorScheme.onPrimary)
         }
 
         SnackbarHost(

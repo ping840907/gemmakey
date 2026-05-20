@@ -126,7 +126,11 @@ class GemmaInferenceManager @Inject constructor(
             // bad_variant_access in native code and causes SIGABRT on non-NPU devices.
             visionBackend = null,
             maxNumTokens  = MAX_TOKENS,
-            cacheDir      = context.cacheDir.absolutePath
+            // Match Gallery: only set cacheDir for the developer scratch path.
+            // Always setting cacheDir causes GPU backend initialisation to fail
+            // (confirmed against google-ai-edge/gallery LlmChatModelHelper.kt).
+            cacheDir      = if (modelPath.startsWith("/data/local/tmp"))
+                context.getExternalFilesDir(null)?.absolutePath else null
         )
         return Engine(cfg).also { it.initialize() }
     }

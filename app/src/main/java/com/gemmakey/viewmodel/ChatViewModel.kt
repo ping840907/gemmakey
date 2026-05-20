@@ -135,7 +135,11 @@ class ChatViewModel @Inject constructor(
                     updateLoadingMessage(loadingId, responseBuilder.toString())
                 }
 
-                // 推論完成後，檢查 @Tool 是否被呼叫
+                // 推論完成後，先嘗試 LiteRT-LM 原生 tool calling；
+                // 若未觸發（ToolSet/ToolProvider 型別不符時的 fallback），改以文字解析
+                if (toolSet.lastCall == null) {
+                    toolSet.parseFromToolCallText(responseBuilder.toString())
+                }
                 val toolCallResult = toolSet.lastCall
                 if (toolCallResult != null) {
                     val previewText = buildPreviewText(toolCallResult)

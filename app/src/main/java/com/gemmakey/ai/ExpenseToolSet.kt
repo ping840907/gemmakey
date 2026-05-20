@@ -62,6 +62,39 @@ class ExpenseToolSet : ToolSet {
 
     fun clearLastCall() { lastCall = null }
 
+    /**
+     * Fallback parser for when LiteRT-LM native tool calling doesn't fire.
+     * Handles Gemma 4's raw output format:
+     *   <|tool_call|>call:record_expense{amount:120,category:"晚餐",date:"2026-05-19"}<|/tool_call|>
+     * Special quote tokens like <|"|> are normalised to " before matching.
+     */
+    fun parseFromToolCallText(response: String): ParsedExpense? {
+        val normalized = response.replace(Regex("""<\|["']\|>"""), "\"")
+
+        val match = Regex(
+            """call\s*:\s*record_expense\s*\{([^}]+)\}""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        ).find(normalized) ?: return null
+
+        val args = match.groupValues[1]
+
+        fun str(key: String): String? =
+            Regex(""""?$key"?\s*:\s*"?([^",}\n]+)"?""", RegexOption.IGNORE_CASE)
+                .find(args)?.groupValues?.get(1)?.trim()?.trimEnd('"')
+
+        val amount = str("amount")?.toDoubleOrNull()?.takeIf { it > 0 } ?: return null
+
+        lastCall = ParsedExpense(
+            amount      = amount,
+            type        = if (str("type")?.uppercase() == "INCOME") ExpenseType.INCOME
+                          else ExpenseType.EXPENSE,
+            category    = ExpenseCategory.fromString(str("category") ?: ""),
+            description = str("description")?.ifBlank { null } ?: str("category") ?: "",
+            date        = parseDate(str("date") ?: "")
+        )
+        return lastCall
+    }
+
     // ── 日期解析（支援 yyyy-MM-dd 及常見格式，失敗則 fallback 今日）─────────
     private fun parseDate(raw: String): LocalDate {
         val s = raw.trim()

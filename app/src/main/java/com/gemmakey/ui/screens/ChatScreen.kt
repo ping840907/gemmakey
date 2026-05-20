@@ -3,6 +3,7 @@ package com.gemmakey.ui.screens
 import android.net.Uri
 import androidx.compose.animation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.lazy.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
@@ -44,7 +45,7 @@ fun ChatScreen(viewModel: ChatViewModel = hiltViewModel()) {
         )
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize().imePadding()) {
         // Status bar
         InferenceStatusBar(uiState.inferenceState.isReady, uiState.inferenceState.backend,
             uiState.inferenceState.isLoading, uiState.inferenceState.error)

@@ -79,4 +79,8 @@ class HistoryViewModel @Inject constructor(
     fun clearPendingDelete() {
         _uiState.update { it.copy(pendingDelete = null) }
     }
+
+    fun saveEntry(entry: ExpenseEntry) {
+        viewModelScope.launch { repository.save(entry) }
+    }
 }
