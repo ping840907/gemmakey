@@ -51,7 +51,10 @@ class PromptBuilder @Inject constructor() {
     // ── RAG 上下文格式化 ──────────────────────────────────────────────────────
 
     fun formatRAGContext(entries: List<ExpenseEntry>): String {
-        if (entries.isEmpty()) return ""
+        // Always return a non-blank string so buildUserMessage always injects the database
+        // section. Without this, an empty list → blank ragContext → no section injected →
+        // model falls back to conversation history and can hallucinate unconfirmed entries.
+        if (entries.isEmpty()) return "（資料庫目前無任何記帳記錄）"
         return entries.joinToString("\n") { e ->
             val sign = if (e.type == ExpenseType.INCOME) "+" else "-"
             "${e.date.format(dateFormatter)} ${e.category.emoji}${e.category.displayName} $sign${e.amount.toLong()} ${e.description}"
