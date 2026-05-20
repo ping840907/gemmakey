@@ -16,15 +16,27 @@ class PromptBuilder @Inject constructor() {
 
     private val dateFormatter = DateTimeFormatter.ofPattern("yyyy/MM/dd")
 
-    // ── System Instruction（透過 ConversationConfig.systemInstruction 傳入）──
+    // ── System Instruction（動態注入今日日期，每次對話開始時取得）───────────
 
-    val systemInstruction: String = """
-你是 GemmaKey 智慧記帳助理。
+    fun buildSystemInstruction(): String {
+        val today = java.time.LocalDate.now()
+        val todayStr = today.format(DateTimeFormatter.ISO_LOCAL_DATE)  // yyyy-MM-dd
+        val todayChinese = today.format(DateTimeFormatter.ofPattern("yyyy年M月d日"))
+        return """
+你是 GemmaKey 智慧記帳助理。今天是 $todayChinese（$todayStr）。
 
 當用戶描述任何消費或收入時，呼叫 record_expense 工具記錄它。
+呼叫工具時，date 欄位規則：
+- 若用戶明確提及日期（如「昨天」「上週五」「3月15日」「2024/12/25」），請換算為 yyyy-MM-dd 格式填入。
+- 若用戶未提及任何日期，請填入今天的日期：$todayStr。
+
 當用戶詢問歷史記帳問題時，根據提供的資料庫記錄直接回答。
 所有回答使用繁體中文，保持簡潔。
 """.trimIndent()
+    }
+
+    // 向後相容的 val（chatViewModel 改呼叫 buildSystemInstruction()）
+    val systemInstruction: String get() = buildSystemInstruction()
 
     // ── 使用者訊息建構 ────────────────────────────────────────────────────────
 

@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -26,7 +27,9 @@ import com.gemmakey.model.ParsedExpense
 import com.gemmakey.ui.theme.GreenIncome
 import com.gemmakey.ui.theme.RedExpense
 import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConfirmationDialog(
     parsed: ParsedExpense,
@@ -34,11 +37,38 @@ fun ConfirmationDialog(
     onConfirm: (ExpenseEntry) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var amount      by remember { mutableStateOf(parsed.amount?.toLong()?.toString() ?: "") }
-    var description by remember { mutableStateOf(parsed.description) }
-    var type        by remember { mutableStateOf(parsed.type) }
-    var category    by remember { mutableStateOf(parsed.category) }
+    var amount               by remember { mutableStateOf(parsed.amount?.toLong()?.toString() ?: "") }
+    var description          by remember { mutableStateOf(parsed.description) }
+    var type                 by remember { mutableStateOf(parsed.type) }
+    var category             by remember { mutableStateOf(parsed.category) }
+    var selectedDate         by remember { mutableStateOf(parsed.date) }
     var categoryMenuExpanded by remember { mutableStateOf(false) }
+    var showDatePicker       by remember { mutableStateOf(false) }
+
+    // DatePicker state — 以毫秒表示（UTC midnight）
+    val datePickerState = rememberDatePickerState(
+        initialSelectedDateMillis = selectedDate
+            .toEpochDay() * 86_400_000L
+    )
+
+    if (showDatePicker) {
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    datePickerState.selectedDateMillis?.let { millis ->
+                        selectedDate = LocalDate.ofEpochDay(millis / 86_400_000L)
+                    }
+                    showDatePicker = false
+                }) { Text("確定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) { Text("取消") }
+            }
+        ) {
+            DatePicker(state = datePickerState)
+        }
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -51,16 +81,18 @@ fun ConfirmationDialog(
             shape = RoundedCornerShape(24.dp),
             tonalElevation = 8.dp
         ) {
-            Column(modifier = Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-
-                // Title
+            Column(
+                modifier = Modifier.padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // ── 標題 ─────────────────────────────────────────────────────
                 Text(
                     text = "確認記帳內容",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
 
-                // Type toggle
+                // ── 支出 / 收入 toggle ────────────────────────────────────────
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -70,7 +102,7 @@ fun ConfirmationDialog(
                 ) {
                     ExpenseType.entries.forEach { t ->
                         val selected = type == t
-                        val color = when {
+                        val bg = when {
                             selected && t == ExpenseType.EXPENSE -> RedExpense
                             selected && t == ExpenseType.INCOME  -> GreenIncome
                             else -> Color.Transparent
@@ -79,21 +111,22 @@ fun ConfirmationDialog(
                             modifier = Modifier
                                 .weight(1f)
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(color)
+                                .background(bg)
                                 .clickable { type = t }
                                 .padding(vertical = 10.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
                                 text = if (t == ExpenseType.EXPENSE) "支出" else "收入",
-                                color = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = if (selected) Color.White
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
                             )
                         }
                     }
                 }
 
-                // Amount
+                // ── 金額 ──────────────────────────────────────────────────────
                 OutlinedTextField(
                     value = amount,
                     onValueChange = { v -> if (v.all { it.isDigit() || it == '.' }) amount = v },
@@ -101,10 +134,47 @@ fun ConfirmationDialog(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
-                    leadingIcon = { Text("$", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) }
+                    leadingIcon = {
+                        Text("$", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                    }
                 )
 
-                // Category dropdown
+                // ── 日期（可點擊開啟 DatePicker）────────────────────────────────
+                val isToday = selectedDate == LocalDate.now()
+                val dateLabel = buildString {
+                    append(selectedDate.format(DateTimeFormatter.ofPattern("yyyy年M月d日")))
+                    if (isToday) append("（今天）")
+                }
+                OutlinedTextField(
+                    value = dateLabel,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("日期") },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.CalendarMonth,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    },
+                    trailingIcon = {
+                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = null)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showDatePicker = true },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        // 讓欄位看起來可互動
+                        disabledTextColor     = MaterialTheme.colorScheme.onSurface,
+                        disabledBorderColor   = MaterialTheme.colorScheme.outline,
+                        disabledLabelColor    = MaterialTheme.colorScheme.onSurfaceVariant,
+                        disabledLeadingIconColor  = MaterialTheme.colorScheme.primary,
+                        disabledTrailingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
+                    enabled = false
+                )
+
+                // ── 類別 ──────────────────────────────────────────────────────
                 ExposedDropdownMenuBox(
                     expanded = categoryMenuExpanded,
                     onExpandedChange = { categoryMenuExpanded = it }
@@ -132,7 +202,7 @@ fun ConfirmationDialog(
                     }
                 }
 
-                // Description
+                // ── 備註 ──────────────────────────────────────────────────────
                 OutlinedTextField(
                     value = description,
                     onValueChange = { description = it },
@@ -141,7 +211,7 @@ fun ConfirmationDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // Buttons
+                // ── 按鈕 ──────────────────────────────────────────────────────
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -156,12 +226,12 @@ fun ConfirmationDialog(
                             val amt = amount.toDoubleOrNull() ?: return@Button
                             onConfirm(
                                 ExpenseEntry(
-                                    amount = amt,
-                                    type = type,
-                                    category = category,
+                                    amount      = amt,
+                                    type        = type,
+                                    category    = category,
                                     description = description.ifBlank { category.displayName },
-                                    date = LocalDate.now(),
-                                    rawInput = rawInput
+                                    date        = selectedDate,   // 使用（已可能被修改的）日期
+                                    rawInput    = rawInput
                                 )
                             )
                         },

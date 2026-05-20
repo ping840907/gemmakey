@@ -6,21 +6,12 @@ import com.google.ai.edge.litertlm.ToolSet
 import com.gemmakey.model.ExpenseCategory
 import com.gemmakey.model.ExpenseType
 import com.gemmakey.model.ParsedExpense
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
 
-/**
- * Gemma 4 反射式 Function Calling 工具集（對照 Gallery AgentTools.kt）。
- *
- * 使用方式：
- *   val toolSet = ExpenseToolSet()
- *   val conv = engine.createConversation(ConversationConfig(tools = toolSet))
- *
- * 模型呼叫 record_expense() 時：
- *   - toolSet.lastCall 持有解析結果
- *   - ViewModel 偵測到後彈出確認 dialog
- */
 class ExpenseToolSet : ToolSet {
 
-    /** 最後一次工具呼叫的解析結果，ViewModel 消費後應清空 */
     @Volatile var lastCall: ParsedExpense? = null
         private set
 
@@ -42,26 +33,67 @@ class ExpenseToolSet : ToolSet {
         category: String,
 
         @ToolParam(description = "10 字以內的簡短說明")
-        description: String
+        description: String,
+
+        @ToolParam(
+            description = "交易日期，格式 yyyy-MM-dd。" +
+                "若用戶有提及日期（昨天、上週五、3月15日等），請換算為絕對日期；" +
+                "若未提及日期，請填入今天的日期。"
+        )
+        date: String
     ): Map<String, String> {
-        return if (amount <= 0) {
-            mapOf("status" to "error", "message" to "金額必須大於零")
-        } else {
-            lastCall = ParsedExpense(
-                amount = amount,
-                type = if (type.trim().uppercase() == "INCOME")
-                    ExpenseType.INCOME else ExpenseType.EXPENSE,
-                category = ExpenseCategory.fromString(category.trim()),
-                description = description.trim()
-            )
-            // 回傳 "awaiting_confirmation"，ViewModel 偵測到後顯示 dialog
-            // 模型收到此結果後會輸出「請確認以下記帳內容」之類的提示
-            mapOf(
-                "status"  to "awaiting_confirmation",
-                "message" to "已偵測到記帳內容，請用戶確認後儲存"
-            )
+        if (amount <= 0) {
+            return mapOf("status" to "error", "message" to "金額必須大於零")
         }
+
+        lastCall = ParsedExpense(
+            amount      = amount,
+            type        = if (type.trim().uppercase() == "INCOME") ExpenseType.INCOME
+                          else ExpenseType.EXPENSE,
+            category    = ExpenseCategory.fromString(category.trim()),
+            description = description.trim(),
+            date        = parseDate(date)
+        )
+        return mapOf(
+            "status"  to "awaiting_confirmation",
+            "message" to "已偵測到記帳內容，請用戶確認後儲存"
+        )
     }
 
     fun clearLastCall() { lastCall = null }
+
+    // ── 日期解析（支援 yyyy-MM-dd 及常見格式，失敗則 fallback 今日）─────────
+    private fun parseDate(raw: String): LocalDate {
+        val s = raw.trim()
+        val today = LocalDate.now()
+
+        // 有完整年份的格式
+        val fullFormatters = listOf(
+            DateTimeFormatter.ISO_LOCAL_DATE,           // yyyy-MM-dd（模型主要輸出格式）
+            DateTimeFormatter.ofPattern("yyyy/MM/dd"),
+            DateTimeFormatter.ofPattern("yyyy年MM月dd日"),
+            DateTimeFormatter.ofPattern("yyyy年M月d日"),
+        )
+        for (fmt in fullFormatters) {
+            try { return LocalDate.parse(s, fmt) } catch (_: DateTimeParseException) {}
+        }
+
+        // 無年份：補入今年（例如模型輸出 "3月15日" 或 "03-15"）
+        val noYearFormatters = listOf(
+            DateTimeFormatter.ofPattern("M月d日"),
+            DateTimeFormatter.ofPattern("MM月dd日"),
+            DateTimeFormatter.ofPattern("MM-dd"),
+            DateTimeFormatter.ofPattern("MM/dd"),
+        )
+        for (fmt in noYearFormatters) {
+            try {
+                val ta = fmt.parse(s)
+                val month = ta.get(java.time.temporal.ChronoField.MONTH_OF_YEAR)
+                val day   = ta.get(java.time.temporal.ChronoField.DAY_OF_MONTH)
+                return LocalDate.of(today.year, month, day)
+            } catch (_: Exception) {}
+        }
+
+        return today  // 完全無法解析時使用今日
+    }
 }
