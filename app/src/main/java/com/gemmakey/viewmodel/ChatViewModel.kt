@@ -25,13 +25,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
+private val WELCOME_MESSAGE = ChatMessage(
+    role = MessageRole.ASSISTANT,
+    text = "你好！我是 GemmaKey 記帳助理 ✨\n\n你可以：\n• 直接說「午餐花了 150 元」讓我記錄\n• 拍下收據或帳單讓我辨識\n• 問我「這個月花了多少」等問題"
+)
+
 data class ChatUiState(
-    val messages: List<ChatMessage> = listOf(
-        ChatMessage(
-            role = MessageRole.ASSISTANT,
-            text = "你好！我是 GemmaKey 記帳助理 ✨\n\n你可以：\n• 直接說「午餐花了 150 元」讓我記錄\n• 拍下收據或帳單讓我辨識\n• 問我「這個月花了多少」等問題"
-        )
-    ),
+    val messages: List<ChatMessage> = listOf(WELCOME_MESSAGE),
     val isGenerating: Boolean = false,
     val inferenceState: InferenceState = InferenceState(),
     val pendingExpense: ParsedExpense? = null,
@@ -66,24 +66,39 @@ class ChatViewModel @Inject constructor(
         _uiState.update { it.copy(inferenceState = state) }
 
         if (state.isReady) {
-            // 建立帶有 systemInstruction 和 record_expense 工具的對話。
-            // ToolSet 在 LiteRT-LM 0.11.0 與 ToolProvider 是不同型別；KSP 可能在執行期
-            // 產生橋接實作，因此透過 Any 轉型並在失敗時 fallback 到空工具清單。
-            conversation = withContext(Dispatchers.IO) {
-                runCatching {
-                    @Suppress("UNCHECKED_CAST")
-                    val toolProviders = listOf(toolSet as Any as ToolProvider)
-                    gemma.createConversation(
-                        systemInstruction = promptBuilder.systemInstruction,
-                        tools = toolProviders
-                    )
-                }.recoverCatching {
-                    // ToolSet 無法轉型時退回無工具模式；LLM 仍可用文字回應
-                    gemma.createConversation(systemInstruction = promptBuilder.systemInstruction)
-                }.getOrNull()
-            }
+            conversation = withContext(Dispatchers.IO) { createNewConversation() }
         }
         if (state.error != null) appendAssistantMessage("⚠️ ${state.error}")
+    }
+
+    // ── 對話建立（可重用於 init 和 clear）────────────────────────────────────────
+
+    private suspend fun createNewConversation(): Conversation? =
+        // ToolSet 在 LiteRT-LM 0.11.0 與 ToolProvider 是不同型別；KSP 可能在執行期
+        // 產生橋接實作，因此透過 Any 轉型並在失敗時 fallback 到空工具清單。
+        runCatching {
+            @Suppress("UNCHECKED_CAST")
+            val toolProviders = listOf(toolSet as Any as ToolProvider)
+            gemma.createConversation(systemInstruction = promptBuilder.systemInstruction, tools = toolProviders)
+        }.recoverCatching {
+            gemma.createConversation(systemInstruction = promptBuilder.systemInstruction)
+        }.getOrNull()
+
+    // ── 清除對話 ──────────────────────────────────────────────────────────────
+
+    fun clearConversation() {
+        if (_uiState.value.isGenerating) return
+        toolSet.clearLastCall()
+        _uiState.update {
+            it.copy(messages = listOf(WELCOME_MESSAGE), pendingExpense = null, pendingRawInput = "")
+        }
+        viewModelScope.launch {
+            conversation?.close()
+            conversation = null
+            if (gemma.state.isReady) {
+                conversation = withContext(Dispatchers.IO) { createNewConversation() }
+            }
+        }
     }
 
     // ── 使用者輸入 ────────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -94,6 +95,7 @@ private fun GemmaKeyApp() {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .consumeWindowInsets(innerPadding)  // prevent imePadding() double-counting nav bar
         ) {
             composable(NavDestination.Chat.route)       { ChatScreen() }
             composable(NavDestination.History.route)    { HistoryScreen() }

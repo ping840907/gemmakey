@@ -87,25 +87,21 @@ class GemmaInferenceManager @Inject constructor(
         // runCatching cannot intercept. Skipping on other SoCs prevents the crash.
         if (isNpuSocLikely()) {
             runCatching {
-                buildEngine(
-                    modelPath,
-                    backend = Backend.NPU(
-                        nativeLibraryDir = context.applicationInfo.nativeLibraryDir
-                    )
-                )
+                buildEngine(modelPath, Backend.NPU(context.applicationInfo.nativeLibraryDir), Backend.CPU())
             }.onSuccess { return it to InferenceBackend.NPU }
              .onFailure  { Log.w(TAG, "NPU unavailable: ${it.message}") }
         }
 
-        // GPU（OpenCL / Vulkan）
+        // GPU — visionBackend must match (Gemma 4 is multimodal; omitting visionBackend
+        // causes GPU engine init to fail even when only text inference is used).
         runCatching {
-            buildEngine(modelPath, backend = Backend.GPU())
+            buildEngine(modelPath, Backend.GPU(), Backend.GPU())
         }.onSuccess { return it to InferenceBackend.GPU }
          .onFailure  { Log.w(TAG, "GPU unavailable: ${it.message}") }
 
         // CPU（XNNPACK）
         runCatching {
-            buildEngine(modelPath, backend = Backend.CPU())
+            buildEngine(modelPath, Backend.CPU(), Backend.CPU())
         }.onSuccess { return it to InferenceBackend.CPU }
          .onFailure  { Log.e(TAG, "CPU also failed: ${it.message}") }
 
@@ -118,17 +114,12 @@ class GemmaInferenceManager @Inject constructor(
         return soc.contains("qualcomm") || soc.contains("mediatek")
     }
 
-    private fun buildEngine(modelPath: String, backend: Backend): Engine {
+    private fun buildEngine(modelPath: String, backend: Backend, visionBackend: Backend): Engine {
         val cfg = EngineConfig(
             modelPath     = modelPath,
             backend       = backend,
-            // gemma-4-E2B-it is a text-only model; passing visionBackend triggers
-            // bad_variant_access in native code and causes SIGABRT on non-NPU devices.
-            visionBackend = null,
+            visionBackend = visionBackend,
             maxNumTokens  = MAX_TOKENS,
-            // Match Gallery: only set cacheDir for the developer scratch path.
-            // Always setting cacheDir causes GPU backend initialisation to fail
-            // (confirmed against google-ai-edge/gallery LlmChatModelHelper.kt).
             cacheDir      = if (modelPath.startsWith("/data/local/tmp"))
                 context.getExternalFilesDir(null)?.absolutePath else null
         )

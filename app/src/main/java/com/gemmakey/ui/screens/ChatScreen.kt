@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.lazy.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -22,20 +23,19 @@ import com.gemmakey.ui.components.MessageBubble
 import com.gemmakey.utils.ImageUtils
 import com.gemmakey.viewmodel.ChatViewModel
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(viewModel: ChatViewModel = hiltViewModel()) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
     val listState = rememberLazyListState()
 
-    // Auto-scroll to latest message
     LaunchedEffect(uiState.messages.size) {
         if (uiState.messages.isNotEmpty()) {
             listState.animateScrollToItem(uiState.messages.lastIndex)
         }
     }
 
-    // Confirmation dialog
     uiState.pendingExpense?.let { parsed ->
         ConfirmationDialog(
             parsed = parsed,
@@ -46,7 +46,26 @@ fun ChatScreen(viewModel: ChatViewModel = hiltViewModel()) {
     }
 
     Column(modifier = Modifier.fillMaxSize().imePadding()) {
-        // Status bar
+        // ── 頂部欄 ──────────────────────────────────────────────────────────
+        TopAppBar(
+            title = { Text("記帳助理", style = MaterialTheme.typography.titleMedium) },
+            actions = {
+                if (uiState.messages.size > 1 && !uiState.isGenerating) {
+                    IconButton(onClick = viewModel::clearConversation) {
+                        Icon(
+                            Icons.Default.DeleteSweep,
+                            contentDescription = "清除對話",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            )
+        )
+
+        // ── 模型狀態列 ───────────────────────────────────────────────────────
         InferenceStatusBar(uiState.inferenceState.isReady, uiState.inferenceState.backend,
             uiState.inferenceState.isLoading, uiState.inferenceState.error)
 
