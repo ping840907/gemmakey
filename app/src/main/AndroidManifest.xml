@@ -10,6 +10,15 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
+    <!-- Allow LiteRT native runtime to load vendor OpenCL/NPU drivers.
+         Without these, Android API 29+ linker namespace restrictions prevent
+         access to libvndksupport.so and libOpenCL.so, causing GPU to fall back
+         to an unimplemented OpenGL stub (CreateSharedMemoryManager error). -->
+    <uses-native-library android:name="libvndksupport.so"       android:required="false" />
+    <uses-native-library android:name="libOpenCL.so"            android:required="false" />
+    <uses-native-library android:name="libcdsprpc.so"           android:required="false" />
+    <uses-native-library android:name="libedgetpu_litert.so"    android:required="false" />
+
     <application
         android:name=".GemmaKeyApplication"
         android:allowBackup="true"

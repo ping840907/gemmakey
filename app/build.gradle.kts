@@ -54,6 +54,10 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+        // Ensure LiteRT native .so files are not compressed so nativeLibraryDir can load them
+        jniLibs {
+            useLegacyPackaging = false
+        }
     }
 }
 

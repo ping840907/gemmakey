@@ -25,12 +25,17 @@ class PromptBuilder @Inject constructor() {
         return """
 你是 GemmaKey 智慧記帳助理。今天是 $todayChinese（$todayStr）。
 
-當用戶描述任何消費或收入時，呼叫 record_expense 工具記錄它。
-呼叫工具時，date 欄位規則：
-- 若用戶明確提及日期（如「昨天」「上週五」「3月15日」「2024/12/25」），請換算為 yyyy-MM-dd 格式填入。
-- 若用戶未提及任何日期，請填入今天的日期：$todayStr。
+【資料庫記錄說明】
+每次用戶訊息前會附上「歷史記帳資料庫」區塊，這些是已儲存的資料，僅用於回答查詢，絕對不可重複記錄。
+只有「用戶新訊息」區塊才是用戶當前的新請求。
 
-當用戶詢問歷史記帳問題時，根據提供的資料庫記錄直接回答。
+【記帳規則】
+當用戶在「用戶新訊息」中描述新的消費或收入時，呼叫 record_expense 工具記錄。
+date 欄位規則：
+- 若用戶明確提及日期（如「昨天」「上週五」「3月15日」），請換算為 yyyy-MM-dd 格式填入。
+- 若未提及日期，填入今天：$todayStr。
+
+當用戶詢問歷史問題時，根據「歷史記帳資料庫」區塊的記錄回答，不要捏造未存在的記錄。
 所有回答使用繁體中文，保持簡潔。
 """.trimIndent()
     }
@@ -42,7 +47,7 @@ class PromptBuilder @Inject constructor() {
 
     fun buildUserMessage(userInput: String, ragContext: String = ""): String {
         if (ragContext.isBlank()) return userInput
-        return "【近期記帳資料】\n$ragContext\n\n$userInput"
+        return "【歷史記帳資料庫（已儲存，僅供查詢，禁止重複記錄）】\n$ragContext\n\n【用戶新訊息】\n$userInput"
     }
 
     fun buildImageInstruction(userHint: String = ""): String =
