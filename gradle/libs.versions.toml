@@ -8,8 +8,8 @@ activity-compose = "1.10.1"
 lifecycle = "2.9.0"
 room = "2.7.1"
 camerax = "1.4.2"
-# LiteRT-LM 取代 MediaPipe tasks-genai，支援 NPU/GPU/CPU 後端
-litertlm = "latest.release"
+# LiteRT-LM — 官方 Gallery 對照版本 0.11.0（避免 latest.release 不穩定）
+litertlm = "0.11.0"
 navigation = "2.8.9"
 coroutines = "1.10.2"
 datastore = "1.1.4"

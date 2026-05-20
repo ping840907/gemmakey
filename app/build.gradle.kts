@@ -12,7 +12,8 @@ android {
 
     defaultConfig {
         applicationId = "com.gemmakey"
-        minSdk = 26
+        // LiteRT-LM 0.11.0 官方最低要求 API 31（對照 Gallery app）
+        minSdk = 31
         targetSdk = 36
         versionCode = 1
         versionName = "1.0.0"
@@ -47,7 +48,7 @@ android {
 
     // Large model assets — do not compress
     androidResources {
-        noCompress += listOf("bin", "tflite", "task")
+        noCompress += listOf("bin", "tflite", "task", "litertlm")
     }
 
     packaging {

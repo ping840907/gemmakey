@@ -5,28 +5,36 @@ import android.graphics.Bitmap
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Conversation
+import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.LogSeverity
+import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.MessageCallback
+import com.google.ai.edge.litertlm.SamplerConfig
+import com.google.ai.edge.litertlm.ToolProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val TAG = "GemmaInference"
 
-// 模型檔案：放在 assets/gemma4/ 或裝置內部儲存
-// 從 HuggingFace litert-community/gemma-4-E2B-it-litert-lm 下載 .litertlm 格式
 private const val MODEL_ASSET_PATH = "gemma4/model.litertlm"
 private const val MODEL_FILENAME   = "model.litertlm"
+private const val MAX_TOKENS       = 2048
+private const val TOP_K            = 40
+private const val TEMPERATURE      = 0.7f
 
-// ── 後端優先序 ────────────────────────────────────────────────────────────────
-// NPU  (Qualcomm QNN / MediaTek NeuroPilot) → GPU (OpenCL/Vulkan) → CPU (XNNPACK)
-// NNAPI 已於 Android 15 廢棄，LiteRT-LM 直接對接晶片廠 NPU 插件取代之
+// ── 後端優先序：NPU → GPU → CPU（對照 Gallery LlmChatModelHelper.kt） ────────
 enum class InferenceBackend { NPU, GPU, CPU }
 
 data class InferenceState(
@@ -41,10 +49,11 @@ class GemmaInferenceManager @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     private var engine: Engine? = null
+    private var activeBackend: InferenceBackend = InferenceBackend.GPU
     var state: InferenceState = InferenceState()
         private set
 
-    // ── 初始化 ────────────────────────────────────────────────────────────────
+    // ── 初始化 ─────────────────────────────────────────────────────────────
 
     suspend fun initialize(): InferenceState = withContext(Dispatchers.IO) {
         state = InferenceState(isLoading = true)
@@ -63,135 +72,185 @@ class GemmaInferenceManager @Inject constructor(
             return@withContext state
         }
         engine = eng
+        activeBackend = backend
         state = InferenceState(isReady = true, backend = backend)
         Log.i(TAG, "Gemma 4 ready — backend=$backend, model=$modelPath")
         state
     }
 
-    // ── 後端選擇：NPU → GPU → CPU ─────────────────────────────────────────────
+    // ── 後端選擇（對照 Gallery Accelerator enum：CPU / GPU / NPU）────────────
 
     private suspend fun tryCreateEngine(modelPath: String): Pair<Engine?, InferenceBackend> {
-        // 1. NPU（Qualcomm Snapdragon / MediaTek Dimensity）
-        //    LiteRT-LM 透過 nativeLibraryDir 自動尋找晶片廠的加速器插件
+        // 1. NPU（Qualcomm QNN / MediaTek NeuroPilot）
         runCatching {
-            Engine(
-                EngineConfig(
-                    modelPath = modelPath,
-                    backend = Backend.NPU(
-                        nativeLibraryDir = context.applicationInfo.nativeLibraryDir
-                    )
-                )
-            ).also { it.initialize() }
+            buildEngine(
+                modelPath,
+                backend       = Backend.NPU(nativeLibraryDir = context.applicationInfo.nativeLibraryDir),
+                visionBackend = Backend.CPU(),  // vision 走 CPU，NPU 只加速 LLM
+                enableVision  = true
+            )
         }.onSuccess { return it to InferenceBackend.NPU }
-         .onFailure  { Log.w(TAG, "NPU backend unavailable: ${it.message}") }
+         .onFailure  { Log.w(TAG, "NPU unavailable: ${it.message}") }
 
-        // 2. GPU（OpenCL / Vulkan，覆蓋約 90% Android 裝置）
+        // 2. GPU（OpenCL / Vulkan）— 視覺後端也走 GPU
         runCatching {
-            Engine(
-                EngineConfig(
-                    modelPath = modelPath,
-                    backend = Backend.GPU()
-                )
-            ).also { it.initialize() }
+            buildEngine(
+                modelPath,
+                backend       = Backend.GPU(),
+                visionBackend = Backend.GPU(),
+                enableVision  = true
+            )
         }.onSuccess { return it to InferenceBackend.GPU }
-         .onFailure  { Log.w(TAG, "GPU backend unavailable: ${it.message}") }
+         .onFailure  { Log.w(TAG, "GPU unavailable: ${it.message}") }
 
-        // 3. CPU（XNNPACK，最終 fallback）
+        // 3. CPU（XNNPACK）
         runCatching {
-            Engine(
-                EngineConfig(
-                    modelPath = modelPath,
-                    backend = Backend.CPU()
-                )
-            ).also { it.initialize() }
+            buildEngine(
+                modelPath,
+                backend       = Backend.CPU(),
+                visionBackend = Backend.CPU(),
+                enableVision  = true
+            )
         }.onSuccess { return it to InferenceBackend.CPU }
-         .onFailure  { Log.e(TAG, "CPU backend also failed: ${it.message}") }
+         .onFailure  { Log.e(TAG, "CPU also failed: ${it.message}") }
 
         return null to InferenceBackend.CPU
     }
 
-    // ── 模型路徑解析 ──────────────────────────────────────────────────────────
+    private fun buildEngine(
+        modelPath: String,
+        backend: Backend,
+        visionBackend: Backend,
+        enableVision: Boolean
+    ): Engine {
+        val cfg = EngineConfig(
+            modelPath     = modelPath,
+            backend       = backend,
+            // visionBackend：Gemma 4 多模態必要（對照 Gallery EngineConfig）
+            visionBackend = if (enableVision) visionBackend else null,
+            maxNumTokens  = MAX_TOKENS,
+            // cacheDir：與 Gallery 一致，僅在 /data/local/tmp 測試路徑時使用
+            cacheDir      = if (modelPath.startsWith("/data/local/tmp"))
+                context.getExternalFilesDir(null)?.absolutePath else null
+        )
+        return Engine(cfg).also { it.initialize() }
+    }
+
+    // ── 對話建立（含 systemInstruction、tools）────────────────────────────────
+
+    /**
+     * 建立 Conversation，對照 Gallery ConversationConfig：
+     * - NPU/TPU 不傳 SamplerConfig（硬體有自己的取樣策略）
+     * - GPU/CPU 傳完整 SamplerConfig
+     */
+    fun createConversation(
+        systemInstruction: String? = null,
+        tools: ToolProvider? = null
+    ): Conversation {
+        val eng = engine ?: error("Engine 未初始化")
+        val samplerCfg = if (activeBackend == InferenceBackend.NPU) null
+            else SamplerConfig(topK = TOP_K, temperature = TEMPERATURE)
+
+        val sysContents = systemInstruction?.let { Contents.of(listOf(Content.Text(it))) }
+
+        return eng.createConversation(
+            ConversationConfig(
+                samplerConfig     = samplerCfg,
+                systemInstruction = sysContents,
+                tools             = tools
+            )
+        )
+    }
+
+    // ── 文字推論（串流，Flow 包裝 MessageCallback）────────────────────────────
+
+    fun generateStream(
+        prompt: String,
+        conversation: Conversation? = null
+    ): Flow<String> = callbackFlow {
+        val conv = conversation ?: runCatching { createConversation() }.getOrNull()
+            ?: run { trySend("[模型未初始化]"); close(); return@callbackFlow }
+
+        val contents = Contents.of(listOf(Content.Text(prompt)))
+
+        // 對照 Gallery sendMessageAsync(Contents, MessageCallback, extraContext)
+        conv.sendMessageAsync(
+            contents,
+            object : MessageCallback {
+                override fun onMessage(message: Message) {
+                    trySend(message.toString())
+                }
+                override fun onDone() { close() }
+                override fun onError(e: Exception) {
+                    Log.e(TAG, "MessageCallback.onError", e)
+                    trySend("❌ 推論錯誤：${e.message}")
+                    close(e)
+                }
+            },
+            emptyMap()
+        )
+        awaitClose()
+    }
+
+    // ── 多模態推論（圖片 + 文字）──────────────────────────────────────────────
+
+    fun generateStreamWithImage(
+        prompt: String,
+        bitmap: Bitmap,
+        conversation: Conversation? = null
+    ): Flow<String> = callbackFlow {
+        val conv = conversation ?: runCatching { createConversation() }.getOrNull()
+            ?: run { trySend("[模型未初始化]"); close(); return@callbackFlow }
+
+        // 對照 Gallery：Content.ImageBytes(bitmap.toPngByteArray())
+        // 不用 Content.ImageFile（該類別在 LiteRT-LM API 中不存在）
+        val imageContent = Content.ImageBytes(bitmap.toPngByteArray())
+        val contents = Contents.of(listOf(imageContent, Content.Text(prompt)))
+
+        conv.sendMessageAsync(
+            contents,
+            object : MessageCallback {
+                override fun onMessage(message: Message) { trySend(message.toString()) }
+                override fun onDone() { close() }
+                override fun onError(e: Exception) {
+                    Log.e(TAG, "Multimodal error", e)
+                    trySend("❌ 圖片推論錯誤：${e.message}")
+                    close(e)
+                }
+            },
+            emptyMap()
+        )
+        awaitClose()
+    }
+
+    // ── 單次完整回應 ──────────────────────────────────────────────────────────
+
+    suspend fun generate(prompt: String, conversation: Conversation? = null): String =
+        withContext(Dispatchers.IO) {
+            val sb = StringBuilder()
+            generateStream(prompt, conversation).collect { sb.append(it) }
+            sb.toString().trim()
+        }
+
+    // ── 工具 ──────────────────────────────────────────────────────────────────
+
+    /** Bitmap → PNG byte array（對照 Gallery 的 toPngByteArray extension） */
+    private fun Bitmap.toPngByteArray(): ByteArray {
+        val out = ByteArrayOutputStream()
+        compress(Bitmap.CompressFormat.PNG, 100, out)
+        return out.toByteArray()
+    }
 
     private fun resolveModelPath(): String? {
-        // 優先使用已複製到內部儲存的版本（避免每次啟動都從 assets 複製）
         val internal = File(context.filesDir, MODEL_FILENAME)
         if (internal.exists() && internal.length() > 0) return internal.absolutePath
-
-        // 從 assets 複製（首次安裝）
         return runCatching {
             context.assets.open(MODEL_ASSET_PATH).use { input ->
-                internal.outputStream().use { output -> input.copyTo(output) }
+                internal.outputStream().use { input.copyTo(it) }
             }
             internal.absolutePath
         }.getOrNull()
     }
-
-    // ── 文字推論（串流）────────────────────────────────────────────────────────
-
-    fun generateStream(prompt: String): Flow<String> = flow {
-        val eng = engine ?: run { emit("[模型未載入]"); return@flow }
-        runCatching {
-            eng.createConversation().use { conv ->
-                conv.sendMessageAsync(listOf(Content.Text(prompt))).collect { emit(it) }
-            }
-        }.onFailure {
-            Log.e(TAG, "generateStream error", it)
-            emit("❌ 推論錯誤：${it.message}")
-        }
-    }
-
-    // ── 多模態推論（圖片 + 文字，串流）──────────────────────────────────────────
-
-    fun generateStreamWithImage(prompt: String, bitmap: Bitmap): Flow<String> = flow {
-        val eng = engine ?: run { emit("[模型未載入]"); return@flow }
-
-        // LiteRT-LM 多模態 API：先將 Bitmap 存為暫存檔，以 Content.ImageFile 傳入
-        val imageFile = saveBitmapToTemp(bitmap)
-        runCatching {
-            eng.createConversation().use { conv ->
-                val contents = if (imageFile != null) {
-                    listOf(
-                        Content.ImageFile(imageFile.absolutePath),
-                        Content.Text(prompt)
-                    )
-                } else {
-                    // 若圖片暫存失敗，退化為純文字
-                    Log.w(TAG, "Image temp file failed, falling back to text-only")
-                    listOf(Content.Text(prompt))
-                }
-                conv.sendMessageAsync(contents).collect { emit(it) }
-            }
-        }.onFailure {
-            Log.e(TAG, "generateStreamWithImage error", it)
-            emit("❌ 圖片推論錯誤：${it.message}")
-        }.also {
-            imageFile?.delete()
-        }
-    }
-
-    // ── 單次完整回應（供解析使用）────────────────────────────────────────────
-
-    suspend fun generate(prompt: String): String = withContext(Dispatchers.IO) {
-        val eng = engine ?: return@withContext "[模型未載入]"
-        val sb = StringBuilder()
-        runCatching {
-            eng.createConversation().use { conv ->
-                conv.sendMessageAsync(listOf(Content.Text(prompt))).collect { sb.append(it) }
-            }
-        }.onFailure { Log.e(TAG, "generate error", it) }
-        sb.toString().trim()
-    }
-
-    // ── 工具 ──────────────────────────────────────────────────────────────────
-
-    private fun saveBitmapToTemp(bitmap: Bitmap): File? = runCatching {
-        val dir = File(context.cacheDir, "llm_images").also { it.mkdirs() }
-        val file = File(dir, "img_${System.currentTimeMillis()}.jpg")
-        file.outputStream().use { out ->
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
-        }
-        file
-    }.getOrNull()
 
     fun close() {
         engine?.close()
