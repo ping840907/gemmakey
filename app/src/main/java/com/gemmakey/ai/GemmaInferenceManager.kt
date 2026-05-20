@@ -80,57 +80,34 @@ class GemmaInferenceManager @Inject constructor(
     // ── 後端選擇（對照 Gallery Accelerator enum：CPU / GPU / NPU）────────────
 
     private suspend fun tryCreateEngine(modelPath: String): Pair<Engine?, InferenceBackend> {
-        // 1. NPU（Qualcomm QNN / MediaTek NeuroPilot）
-        runCatching {
-            buildEngine(
-                modelPath,
-                backend       = Backend.NPU(nativeLibraryDir = context.applicationInfo.nativeLibraryDir),
-                visionBackend = Backend.CPU(),  // vision 走 CPU，NPU 只加速 LLM
-                enableVision  = true
-            )
-        }.onSuccess { return it to InferenceBackend.NPU }
-         .onFailure  { Log.w(TAG, "NPU unavailable: ${it.message}") }
+        // NPU is intentionally skipped: LiteRT-LM 0.11.0 calls std::terminate() (SIGABRT)
+        // via bad_variant_access on devices without Qualcomm QNN / MediaTek NeuroPilot.
+        // A native SIGABRT cannot be caught by Kotlin runCatching, so we never attempt NPU.
 
-        // 2. GPU（OpenCL / Vulkan）— 視覺後端也走 GPU
+        // 1. GPU（OpenCL / Vulkan）
         runCatching {
-            buildEngine(
-                modelPath,
-                backend       = Backend.GPU(),
-                visionBackend = Backend.GPU(),
-                enableVision  = true
-            )
+            buildEngine(modelPath, backend = Backend.GPU())
         }.onSuccess { return it to InferenceBackend.GPU }
          .onFailure  { Log.w(TAG, "GPU unavailable: ${it.message}") }
 
-        // 3. CPU（XNNPACK）
+        // 2. CPU（XNNPACK）
         runCatching {
-            buildEngine(
-                modelPath,
-                backend       = Backend.CPU(),
-                visionBackend = Backend.CPU(),
-                enableVision  = true
-            )
+            buildEngine(modelPath, backend = Backend.CPU())
         }.onSuccess { return it to InferenceBackend.CPU }
          .onFailure  { Log.e(TAG, "CPU also failed: ${it.message}") }
 
         return null to InferenceBackend.CPU
     }
 
-    private fun buildEngine(
-        modelPath: String,
-        backend: Backend,
-        visionBackend: Backend,
-        enableVision: Boolean
-    ): Engine {
+    private fun buildEngine(modelPath: String, backend: Backend): Engine {
         val cfg = EngineConfig(
             modelPath     = modelPath,
             backend       = backend,
-            // visionBackend：Gemma 4 多模態必要（對照 Gallery EngineConfig）
-            visionBackend = if (enableVision) visionBackend else null,
+            // gemma-4-E2B-it is a text-only model; passing visionBackend triggers
+            // bad_variant_access in native code and causes SIGABRT on non-NPU devices.
+            visionBackend = null,
             maxNumTokens  = MAX_TOKENS,
-            // cacheDir：與 Gallery 一致，僅在 /data/local/tmp 測試路徑時使用
-            cacheDir      = if (modelPath.startsWith("/data/local/tmp"))
-                context.getExternalFilesDir(null)?.absolutePath else null
+            cacheDir      = context.cacheDir.absolutePath
         )
         return Engine(cfg).also { it.initialize() }
     }
@@ -192,6 +169,8 @@ class GemmaInferenceManager @Inject constructor(
     }
 
     // ── 多模態推論（圖片 + 文字）──────────────────────────────────────────────
+    // gemma-4-E2B-it 為純文字模型（visionBackend=null），圖片內容會被忽略。
+    // 若改用具備視覺能力的模型，需在 buildEngine 傳入 visionBackend。
 
     fun generateStreamWithImage(
         prompt: String,
@@ -201,8 +180,6 @@ class GemmaInferenceManager @Inject constructor(
         val conv = conversation ?: runCatching { createConversation() }.getOrNull()
             ?: run { trySend("[模型未初始化]"); close(); return@callbackFlow }
 
-        // 對照 Gallery：Content.ImageBytes(bitmap.toPngByteArray())
-        // 不用 Content.ImageFile（該類別在 LiteRT-LM API 中不存在）
         val imageContent = Content.ImageBytes(bitmap.toPngByteArray())
         val contents = Contents.of(listOf(imageContent, Content.Text(prompt)))
 
