@@ -1,0 +1,4 @@
+-keep class com.google.mediapipe.** { *; }
+-keep class com.gemmakey.ai.** { *; }
+-keep class com.gemmakey.data.** { *; }
+-dontwarn com.google.mediapipe.**
