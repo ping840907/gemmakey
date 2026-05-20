@@ -3,13 +3,15 @@ package com.gemmakey.ai
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
-import com.google.mediapipe.tasks.genai.llminference.LlmInference
-import com.google.mediapipe.tasks.genai.llminference.LlmInference.LlmInferenceOptions
+import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.LogSeverity
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
@@ -17,16 +19,15 @@ import javax.inject.Singleton
 
 private const val TAG = "GemmaInference"
 
-// Place the model file at:
-//   assets/gemma4/gemma-4-E2B-it-litert-lm.task
-// OR copy it to internal storage via ModelSetupHelper
-private const val MODEL_ASSET_PATH = "gemma4/gemma-4-E2B-it-litert-lm.task"
-private const val MODEL_FILENAME   = "gemma-4-E2B-it-litert-lm.task"
-private const val MAX_TOKENS = 2048
-private const val TOPK = 40
-private const val TEMPERATURE = 0.7f
+// 模型檔案：放在 assets/gemma4/ 或裝置內部儲存
+// 從 HuggingFace litert-community/gemma-4-E2B-it-litert-lm 下載 .litertlm 格式
+private const val MODEL_ASSET_PATH = "gemma4/model.litertlm"
+private const val MODEL_FILENAME   = "model.litertlm"
 
-enum class InferenceBackend { GPU, CPU_NNAPI, CPU }
+// ── 後端優先序 ────────────────────────────────────────────────────────────────
+// NPU  (Qualcomm QNN / MediaTek NeuroPilot) → GPU (OpenCL/Vulkan) → CPU (XNNPACK)
+// NNAPI 已於 Android 15 廢棄，LiteRT-LM 直接對接晶片廠 NPU 插件取代之
+enum class InferenceBackend { NPU, GPU, CPU }
 
 data class InferenceState(
     val isReady: Boolean = false,
@@ -39,135 +40,162 @@ data class InferenceState(
 class GemmaInferenceManager @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
-    private var llmInference: LlmInference? = null
+    private var engine: Engine? = null
     var state: InferenceState = InferenceState()
         private set
 
-    // ── Initialisation ──────────────────────────────────────────────────────
+    // ── 初始化 ────────────────────────────────────────────────────────────────
 
     suspend fun initialize(): InferenceState = withContext(Dispatchers.IO) {
         state = InferenceState(isLoading = true)
+        Engine.setNativeMinLogSeverity(LogSeverity.ERROR)
+
         val modelPath = resolveModelPath() ?: run {
-            state = InferenceState(error = "找不到模型檔案。請將 $MODEL_FILENAME 放入 assets/gemma4/")
+            state = InferenceState(
+                error = "找不到模型檔案。請依照 MODEL_SETUP.md 下載並放置 $MODEL_FILENAME"
+            )
             return@withContext state
         }
 
-        // Try GPU first → NNAPI → CPU fallback
-        val (inference, backend) = tryCreateInference(modelPath)
-        if (inference == null) {
-            state = InferenceState(error = "模型載入失敗，請確認裝置支援性")
+        val (eng, backend) = tryCreateEngine(modelPath)
+        if (eng == null) {
+            state = InferenceState(error = "模型初始化失敗，請確認裝置相容性與記憶體空間")
             return@withContext state
         }
-        llmInference = inference
+        engine = eng
         state = InferenceState(isReady = true, backend = backend)
-        Log.i(TAG, "Gemma 4 loaded via $backend at $modelPath")
+        Log.i(TAG, "Gemma 4 ready — backend=$backend, model=$modelPath")
         state
     }
 
-    private fun resolveModelPath(): String? {
-        // 1. Internal storage (copied from assets on first launch)
-        val internal = File(context.filesDir, MODEL_FILENAME)
-        if (internal.exists()) return internal.absolutePath
+    // ── 後端選擇：NPU → GPU → CPU ─────────────────────────────────────────────
 
-        // 2. Assets folder — copy to internal storage so LiteRT can mmap it
-        return try {
+    private suspend fun tryCreateEngine(modelPath: String): Pair<Engine?, InferenceBackend> {
+        // 1. NPU（Qualcomm Snapdragon / MediaTek Dimensity）
+        //    LiteRT-LM 透過 nativeLibraryDir 自動尋找晶片廠的加速器插件
+        runCatching {
+            Engine(
+                EngineConfig(
+                    modelPath = modelPath,
+                    backend = Backend.NPU(
+                        nativeLibraryDir = context.applicationInfo.nativeLibraryDir
+                    )
+                )
+            ).also { it.initialize() }
+        }.onSuccess { return it to InferenceBackend.NPU }
+         .onFailure  { Log.w(TAG, "NPU backend unavailable: ${it.message}") }
+
+        // 2. GPU（OpenCL / Vulkan，覆蓋約 90% Android 裝置）
+        runCatching {
+            Engine(
+                EngineConfig(
+                    modelPath = modelPath,
+                    backend = Backend.GPU()
+                )
+            ).also { it.initialize() }
+        }.onSuccess { return it to InferenceBackend.GPU }
+         .onFailure  { Log.w(TAG, "GPU backend unavailable: ${it.message}") }
+
+        // 3. CPU（XNNPACK，最終 fallback）
+        runCatching {
+            Engine(
+                EngineConfig(
+                    modelPath = modelPath,
+                    backend = Backend.CPU()
+                )
+            ).also { it.initialize() }
+        }.onSuccess { return it to InferenceBackend.CPU }
+         .onFailure  { Log.e(TAG, "CPU backend also failed: ${it.message}") }
+
+        return null to InferenceBackend.CPU
+    }
+
+    // ── 模型路徑解析 ──────────────────────────────────────────────────────────
+
+    private fun resolveModelPath(): String? {
+        // 優先使用已複製到內部儲存的版本（避免每次啟動都從 assets 複製）
+        val internal = File(context.filesDir, MODEL_FILENAME)
+        if (internal.exists() && internal.length() > 0) return internal.absolutePath
+
+        // 從 assets 複製（首次安裝）
+        return runCatching {
             context.assets.open(MODEL_ASSET_PATH).use { input ->
                 internal.outputStream().use { output -> input.copyTo(output) }
             }
             internal.absolutePath
-        } catch (_: Exception) {
-            null
-        }
+        }.getOrNull()
     }
 
-    private fun tryCreateInference(modelPath: String): Pair<LlmInference?, InferenceBackend> {
-        for (backend in InferenceBackend.entries) {
-            try {
-                val options = buildOptions(modelPath, backend)
-                val inference = LlmInference.createFromOptions(context, options)
-                return inference to backend
-            } catch (e: Exception) {
-                Log.w(TAG, "Backend $backend failed: ${e.message}")
+    // ── 文字推論（串流）────────────────────────────────────────────────────────
+
+    fun generateStream(prompt: String): Flow<String> = flow {
+        val eng = engine ?: run { emit("[模型未載入]"); return@flow }
+        runCatching {
+            eng.createConversation().use { conv ->
+                conv.sendMessageAsync(listOf(Content.Text(prompt))).collect { emit(it) }
             }
+        }.onFailure {
+            Log.e(TAG, "generateStream error", it)
+            emit("❌ 推論錯誤：${it.message}")
         }
-        return null to InferenceBackend.CPU
     }
 
-    private fun buildOptions(modelPath: String, backend: InferenceBackend): LlmInferenceOptions {
-        val preferredBackend = when (backend) {
-            InferenceBackend.GPU       -> LlmInference.Backend.GPU
-            InferenceBackend.CPU_NNAPI -> LlmInference.Backend.CPU  // NNAPI is set via delegate below
-            InferenceBackend.CPU       -> LlmInference.Backend.CPU
-        }
-        return LlmInferenceOptions.builder()
-            .setModelPath(modelPath)
-            .setMaxTokens(MAX_TOKENS)
-            .setTopK(TOPK)
-            .setTemperature(TEMPERATURE)
-            .setPreferredBackend(preferredBackend)
-            .build()
-    }
+    // ── 多模態推論（圖片 + 文字，串流）──────────────────────────────────────────
 
-    // ── Text inference (streaming) ───────────────────────────────────────────
+    fun generateStreamWithImage(prompt: String, bitmap: Bitmap): Flow<String> = flow {
+        val eng = engine ?: run { emit("[模型未載入]"); return@flow }
 
-    fun generateStream(prompt: String): Flow<String> = callbackFlow {
-        val engine = llmInference ?: run {
-            trySend("[模型未載入]"); close(); return@callbackFlow
-        }
-        try {
-            engine.generateResponseAsync(prompt) { partial, done ->
-                partial?.let { trySend(it) }
-                if (done) close()
+        // LiteRT-LM 多模態 API：先將 Bitmap 存為暫存檔，以 Content.ImageFile 傳入
+        val imageFile = saveBitmapToTemp(bitmap)
+        runCatching {
+            eng.createConversation().use { conv ->
+                val contents = if (imageFile != null) {
+                    listOf(
+                        Content.ImageFile(imageFile.absolutePath),
+                        Content.Text(prompt)
+                    )
+                } else {
+                    // 若圖片暫存失敗，退化為純文字
+                    Log.w(TAG, "Image temp file failed, falling back to text-only")
+                    listOf(Content.Text(prompt))
+                }
+                conv.sendMessageAsync(contents).collect { emit(it) }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "generateStream error", e)
-            trySend("發生錯誤：${e.message}")
-            close(e)
+        }.onFailure {
+            Log.e(TAG, "generateStreamWithImage error", it)
+            emit("❌ 圖片推論錯誤：${it.message}")
+        }.also {
+            imageFile?.delete()
         }
-        awaitClose()
     }
 
-    // ── Multimodal inference (image + text, streaming) ───────────────────────
-
-    fun generateStreamWithImage(prompt: String, bitmap: Bitmap): Flow<String> = callbackFlow {
-        val engine = llmInference ?: run {
-            trySend("[模型未載入]"); close(); return@callbackFlow
-        }
-        try {
-            // Create a session for multimodal input
-            val session = engine.createSession()
-            // Add the image first (Gemma 4 multimodal expects interleaved image+text)
-            val mpImage = com.google.mediapipe.framework.image.BitmapImageBuilder(bitmap).build()
-            session.addQueryChunk(prompt)
-            session.addImage(mpImage)
-            session.generateResponseAsync { partial, done ->
-                partial?.let { trySend(it) }
-                if (done) { session.close(); close() }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "generateStreamWithImage error", e)
-            // Fallback: describe image ourselves and do text-only
-            trySend("[圖片處理錯誤：${e.message}]")
-            close(e)
-        }
-        awaitClose()
-    }
-
-    // ── One-shot (suspend) for parsing ──────────────────────────────────────
+    // ── 單次完整回應（供解析使用）────────────────────────────────────────────
 
     suspend fun generate(prompt: String): String = withContext(Dispatchers.IO) {
-        val engine = llmInference ?: return@withContext "[模型未載入]"
-        try {
-            engine.generateResponse(prompt)
-        } catch (e: Exception) {
-            Log.e(TAG, "generate error", e)
-            "[錯誤：${e.message}]"
-        }
+        val eng = engine ?: return@withContext "[模型未載入]"
+        val sb = StringBuilder()
+        runCatching {
+            eng.createConversation().use { conv ->
+                conv.sendMessageAsync(listOf(Content.Text(prompt))).collect { sb.append(it) }
+            }
+        }.onFailure { Log.e(TAG, "generate error", it) }
+        sb.toString().trim()
     }
 
+    // ── 工具 ──────────────────────────────────────────────────────────────────
+
+    private fun saveBitmapToTemp(bitmap: Bitmap): File? = runCatching {
+        val dir = File(context.cacheDir, "llm_images").also { it.mkdirs() }
+        val file = File(dir, "img_${System.currentTimeMillis()}.jpg")
+        file.outputStream().use { out ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+        }
+        file
+    }.getOrNull()
+
     fun close() {
-        llmInference?.close()
-        llmInference = null
+        engine?.close()
+        engine = null
         state = InferenceState()
     }
 }

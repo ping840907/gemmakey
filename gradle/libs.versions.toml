@@ -8,7 +8,8 @@ activity-compose = "1.10.1"
 lifecycle = "2.9.0"
 room = "2.7.1"
 camerax = "1.4.2"
-mediapipe-tasks-genai = "0.10.24"
+# LiteRT-LM 取代 MediaPipe tasks-genai，支援 NPU/GPU/CPU 後端
+litertlm = "latest.release"
 navigation = "2.8.9"
 coroutines = "1.10.2"
 datastore = "1.1.4"
@@ -49,8 +50,9 @@ camerax-video = { group = "androidx.camera", name = "camera-video", version.ref 
 camerax-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
 camerax-extensions = { group = "androidx.camera", name = "camera-extensions", version.ref = "camerax" }
 
-# MediaPipe Tasks GenAI (LiteRT)
-mediapipe-tasks-genai = { group = "com.google.mediapipe", name = "tasks-genai", version.ref = "mediapipe-tasks-genai" }
+# LiteRT-LM：Google 官方 on-device LLM 推論框架（取代 MediaPipe tasks-genai）
+# 支援 Backend.NPU (Qualcomm QNN / MediaTek NeuroPilot) / Backend.GPU / Backend.CPU
+litertlm-android = { group = "com.google.ai.edge.litertlm", name = "litertlm-android", version.ref = "litertlm" }
 
 # Hilt DI
 hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }

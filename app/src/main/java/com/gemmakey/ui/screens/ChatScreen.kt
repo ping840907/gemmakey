@@ -88,8 +88,8 @@ private fun InferenceStatusBar(
             error != null -> MaterialTheme.colorScheme.errorContainer to "⚠️ $error"
             else -> {
                 val backendLabel = when (backend) {
+                    InferenceBackend.NPU -> "NPU 加速 ⚡"   // Qualcomm QNN / MediaTek NeuroPilot
                     InferenceBackend.GPU -> "GPU 加速"
-                    InferenceBackend.CPU_NNAPI -> "NPU 加速"
                     InferenceBackend.CPU -> "CPU 運算"
                 }
                 MaterialTheme.colorScheme.primaryContainer to "✓ Gemma 4 就緒 · $backendLabel"

@@ -87,8 +87,9 @@ dependencies {
     implementation(libs.camerax.view)
     implementation(libs.camerax.extensions)
 
-    // MediaPipe LiteRT (Gemma 4 on-device)
-    implementation(libs.mediapipe.tasks.genai)
+    // LiteRT-LM：Gemma 4 on-device 推論，支援 NPU / GPU / CPU 加速
+    // 取代舊版 MediaPipe tasks-genai；NPU 後端自動對接 Qualcomm QNN 或 MediaTek NeuroPilot
+    implementation(libs.litertlm.android)
 
     // Hilt
     implementation(libs.hilt.android)
