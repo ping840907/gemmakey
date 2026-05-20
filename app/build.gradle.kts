@@ -7,16 +7,15 @@ plugins {
 }
 
 android {
-    namespace = "com.gemmakey"
-    compileSdk = 36
+    namespace  = "com.gemmakey"
+    compileSdk = 35   // Gallery uses 35 (stable Android 15); 36 = Android 16 Beta
 
     defaultConfig {
         applicationId = "com.gemmakey"
-        // LiteRT-LM 0.11.0 官方最低要求 API 31（對照 Gallery app）
-        minSdk = 31
-        targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        minSdk        = 31   // LiteRT-LM 0.11.0 minimum (Gallery-confirmed)
+        targetSdk     = 35
+        versionCode   = 1
+        versionName   = "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
     }
@@ -42,11 +41,11 @@ android {
     kotlinOptions { jvmTarget = "17" }
 
     buildFeatures {
-        compose = true
+        compose     = true
         buildConfig = true
     }
 
-    // Large model assets — do not compress
+    // Do not compress large model/binary assets
     androidResources {
         noCompress += listOf("bin", "tflite", "task", "litertlm")
     }
@@ -64,7 +63,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
 
-    // Compose
+    // Compose (versions managed by BOM)
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.graphics)
@@ -76,23 +75,15 @@ dependencies {
     // Navigation
     implementation(libs.navigation.compose)
 
-    // Room + FTS
+    // Room + FTS4
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
 
-    // CameraX
-    implementation(libs.camerax.core)
-    implementation(libs.camerax.camera2)
-    implementation(libs.camerax.lifecycle)
-    implementation(libs.camerax.view)
-    implementation(libs.camerax.extensions)
-
-    // LiteRT-LM：Gemma 4 on-device 推論，支援 NPU / GPU / CPU 加速
-    // 取代舊版 MediaPipe tasks-genai；NPU 後端自動對接 Qualcomm QNN 或 MediaTek NeuroPilot
+    // LiteRT-LM: Gemma 4 on-device inference (NPU / GPU / CPU)
     implementation(libs.litertlm.android)
 
-    // Hilt
+    // Hilt (KSP — no kapt needed since Hilt 2.51+)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     implementation(libs.hilt.navigation.compose)
@@ -100,17 +91,6 @@ dependencies {
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
 
-    // DataStore
-    implementation(libs.datastore.preferences)
-
-    // ExifInterface
+    // ExifInterface (EXIF orientation correction for camera images)
     implementation(libs.exifinterface)
-
-    // Coil (image preview)
-    implementation(libs.coil.compose)
-
-    // Vico Charts
-    implementation(libs.vico.compose)
-    implementation(libs.vico.compose.m3)
-    implementation(libs.vico.core)
 }
