@@ -14,6 +14,7 @@ import com.gemmakey.model.ExpenseEntry
 import com.gemmakey.model.MessageRole
 import com.gemmakey.model.ParsedExpense
 import com.google.ai.edge.litertlm.Conversation
+import com.google.ai.edge.litertlm.ToolProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -65,13 +66,20 @@ class ChatViewModel @Inject constructor(
         _uiState.update { it.copy(inferenceState = state) }
 
         if (state.isReady) {
-            // 建立帶有 systemInstruction 和 record_expense 工具的對話
+            // 建立帶有 systemInstruction 和 record_expense 工具的對話。
+            // ToolSet 在 LiteRT-LM 0.11.0 與 ToolProvider 是不同型別；KSP 可能在執行期
+            // 產生橋接實作，因此透過 Any 轉型並在失敗時 fallback 到空工具清單。
             conversation = withContext(Dispatchers.IO) {
                 runCatching {
+                    @Suppress("UNCHECKED_CAST")
+                    val toolProviders = listOf(toolSet as Any as ToolProvider)
                     gemma.createConversation(
                         systemInstruction = promptBuilder.systemInstruction,
-                        tools = toolSet
+                        tools = toolProviders
                     )
+                }.recoverCatching {
+                    // ToolSet 無法轉型時退回無工具模式；LLM 仍可用文字回應
+                    gemma.createConversation(systemInstruction = promptBuilder.systemInstruction)
                 }.getOrNull()
             }
         }

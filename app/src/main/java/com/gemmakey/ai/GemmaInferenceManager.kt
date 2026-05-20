@@ -30,6 +30,7 @@ private const val TAG            = "GemmaInference"
 private const val MODEL_FILENAME = "model.litertlm"
 private const val MAX_TOKENS     = 2048
 private const val TOP_K          = 40
+private const val TOP_P          = 0.95
 private const val TEMPERATURE    = 0.7f
 
 // ── 後端優先序：NPU → GPU → CPU（對照 Gallery LlmChatModelHelper.kt） ────────
@@ -143,11 +144,11 @@ class GemmaInferenceManager @Inject constructor(
      */
     fun createConversation(
         systemInstruction: String? = null,
-        tools: ToolProvider? = null
+        tools: List<ToolProvider> = emptyList()
     ): Conversation {
         val eng = engine ?: error("Engine 未初始化")
         val samplerCfg = if (activeBackend == InferenceBackend.NPU) null
-            else SamplerConfig(topK = TOP_K, temperature = TEMPERATURE)
+            else SamplerConfig(topK = TOP_K, topP = TOP_P, temperature = TEMPERATURE.toDouble())
 
         val sysContents = systemInstruction?.let { Contents.of(listOf(Content.Text(it))) }
 
@@ -179,10 +180,10 @@ class GemmaInferenceManager @Inject constructor(
                     trySend(message.toString())
                 }
                 override fun onDone() { close() }
-                override fun onError(e: Exception) {
-                    Log.e(TAG, "MessageCallback.onError", e)
-                    trySend("❌ 推論錯誤：${e.message}")
-                    close(e)
+                override fun onError(throwable: Throwable) {
+                    Log.e(TAG, "MessageCallback.onError", throwable)
+                    trySend("❌ 推論錯誤：${throwable.message}")
+                    close(throwable)
                 }
             },
             emptyMap()
@@ -210,10 +211,10 @@ class GemmaInferenceManager @Inject constructor(
             object : MessageCallback {
                 override fun onMessage(message: Message) { trySend(message.toString()) }
                 override fun onDone() { close() }
-                override fun onError(e: Exception) {
-                    Log.e(TAG, "Multimodal error", e)
-                    trySend("❌ 圖片推論錯誤：${e.message}")
-                    close(e)
+                override fun onError(throwable: Throwable) {
+                    Log.e(TAG, "Multimodal error", throwable)
+                    trySend("❌ 圖片推論錯誤：${throwable.message}")
+                    close(throwable)
                 }
             },
             emptyMap()
