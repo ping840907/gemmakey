@@ -1,9 +1,9 @@
 [versions]
 # Aligned with google-ai-edge/gallery reference (Android/src/gradle/libs.versions.toml)
 agp            = "8.8.2"          # Gallery: 8.8.2  (was 8.7.3)
-kotlin         = "2.1.0"
-ksp            = "2.1.0-1.0.29"  # must match kotlin version prefix
-hilt           = "2.56"           # Gallery: 2.58; 2.56 = latest stable KSP-compatible
+kotlin         = "2.2.0"          # Gallery: 2.2.0  (was 2.1.0; litertlm metadata requires ≥2.2)
+ksp            = "2.3.6"          # Gallery: 2.3.6  (new independent versioning; reads metadata 2.3.0)
+hilt           = "2.58"           # Gallery: 2.58   (was 2.56; paired with kotlin 2.2 + ksp 2.3.6)
 hilt-navigation = "1.3.0"         # Gallery: 1.3.0  (was hardcoded 1.2.0)
 compose-bom    = "2026.02.00"     # Gallery: 2026.02.00  (was 2025.05.00)
 activity-compose = "1.10.1"
