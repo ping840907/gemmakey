@@ -26,13 +26,11 @@ import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
-private const val TAG = "GemmaInference"
-
-private const val MODEL_ASSET_PATH = "gemma4/model.litertlm"
-private const val MODEL_FILENAME   = "model.litertlm"
-private const val MAX_TOKENS       = 2048
-private const val TOP_K            = 40
-private const val TEMPERATURE      = 0.7f
+private const val TAG            = "GemmaInference"
+private const val MODEL_FILENAME = "model.litertlm"
+private const val MAX_TOKENS     = 2048
+private const val TOP_K          = 40
+private const val TEMPERATURE    = 0.7f
 
 // ── 後端優先序：NPU → GPU → CPU（對照 Gallery LlmChatModelHelper.kt） ────────
 enum class InferenceBackend { NPU, GPU, CPU }
@@ -241,15 +239,26 @@ class GemmaInferenceManager @Inject constructor(
         return out.toByteArray()
     }
 
+    // Model resolution order (never from assets — 3 GB files crash compressDebugAssets):
+    //   1. App-specific external storage: Android/data/com.gemmakey/files/model.litertlm
+    //      → adb push model.litertlm /sdcard/Android/data/com.gemmakey/files/
+    //   2. Internal app storage (persists across reboots, no permission needed)
+    //   3. Developer adb scratch path: /data/local/tmp/model.litertlm
     private fun resolveModelPath(): String? {
+        // External app-specific dir (no READ_EXTERNAL_STORAGE permission needed on API 19+)
+        val external = context.getExternalFilesDir(null)?.let { File(it, MODEL_FILENAME) }
+        if (external != null && external.exists() && external.length() > 0)
+            return external.absolutePath
+
+        // Internal storage (already copied on a previous launch)
         val internal = File(context.filesDir, MODEL_FILENAME)
         if (internal.exists() && internal.length() > 0) return internal.absolutePath
-        return runCatching {
-            context.assets.open(MODEL_ASSET_PATH).use { input ->
-                internal.outputStream().use { input.copyTo(it) }
-            }
-            internal.absolutePath
-        }.getOrNull()
+
+        // Developer convenience path (adb push to /data/local/tmp/)
+        val devPath = File("/data/local/tmp", MODEL_FILENAME)
+        if (devPath.exists() && devPath.length() > 0) return devPath.absolutePath
+
+        return null
     }
 
     fun close() {

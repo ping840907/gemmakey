@@ -12,19 +12,41 @@ https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm
 
 ## 放置模型
 
-將模型放入 app assets（需重新 build），或直接推送到裝置：
+> ⚠️ **不可放入 `app/src/main/assets/`**  
+> Gemma 4 模型約 3 GB，AGP 的 `CompressAssetsTask` 會用 `Files.readAllBytes()` 讀取所有 asset 檔案，超出 JVM 陣列大小上限會直接 OOM 建置失敗。
 
-**方法 A：放入 assets（隨 APK 打包）**
-```
-app/src/main/assets/gemma4/model.litertlm
+### 方法 A：外部 App 專屬儲存（推薦，免重新 build）
+
+```bash
+# App 安裝後才能推送（目錄自動建立）
+adb push model.litertlm /sdcard/Android/data/com.gemmakey/files/model.litertlm
 ```
 
-**方法 B：adb 直接推送到裝置內部儲存**
+此路徑對應 `context.getExternalFilesDir(null)`，**不需要任何 Storage 權限**，App 解除安裝時自動清除。
+
+### 方法 B：內部 App 儲存
+
 ```bash
 adb push model.litertlm /data/data/com.gemmakey/files/model.litertlm
 ```
 
-方法 B 適合開發測試，不需要重新 build APK。
+需要 root 或 `adb shell run-as com.gemmakey`。
+
+### 方法 C：開發者暫存路徑
+
+```bash
+adb push model.litertlm /data/local/tmp/model.litertlm
+```
+
+適合快速測試，不需要 App 已安裝。
+
+## 解析優先序
+
+App 啟動時依以下順序尋找模型：
+
+1. `/sdcard/Android/data/com.gemmakey/files/model.litertlm` （外部 App 目錄）
+2. `/data/data/com.gemmakey/files/model.litertlm` （內部 App 目錄）
+3. `/data/local/tmp/model.litertlm` （開發者暫存）
 
 ## 硬體需求
 
@@ -32,7 +54,7 @@ adb push model.litertlm /data/data/com.gemmakey/files/model.litertlm
 |------|------|
 | RAM  | ≥ 6 GB |
 | 儲存 | ≥ 4 GB 可用 |
-| Android | ≥ 8.0 (API 26) |
+| Android | ≥ 12 (API 31) — LiteRT-LM 0.11.0 最低要求 |
 | 建議 SoC | Snapdragon 8 Gen 2+ / Dimensity 9000+ |
 
 ## 加速後端說明

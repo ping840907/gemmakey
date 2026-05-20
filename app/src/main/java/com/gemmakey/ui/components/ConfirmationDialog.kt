@@ -192,7 +192,7 @@ fun ConfirmationDialog(
                         trailingIcon = {
                             Icon(Icons.Default.KeyboardArrowDown, contentDescription = null)
                         },
-                        modifier = Modifier.fillMaxWidth().menuAnchor()
+                        modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable)
                     )
                     ExposedDropdownMenu(
                         expanded = categoryMenuExpanded,
