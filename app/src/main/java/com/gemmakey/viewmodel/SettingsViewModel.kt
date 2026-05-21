@@ -2,8 +2,7 @@ package com.gemmakey.viewmodel
 
 import androidx.lifecycle.ViewModel
 import com.gemmakey.ai.AppSettings
-import com.gemmakey.ai.BackendType
-import com.gemmakey.ai.GeminiChatManager
+import com.gemmakey.ai.BackendMode
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -12,7 +11,7 @@ import kotlinx.coroutines.flow.update
 import javax.inject.Inject
 
 data class SettingsUiState(
-    val backendType: BackendType = BackendType.GEMMA_LOCAL,
+    val backendMode: BackendMode = BackendMode.GEMMA_ONLY,
     val geminiApiKey: String = "",
     val geminiModelName: String = "gemini-2.0-flash",
     val isSaved: Boolean = false
@@ -28,21 +27,20 @@ val GEMINI_MODELS = listOf(
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-    private val appSettings: AppSettings,
-    private val geminiChatManager: GeminiChatManager
+    private val appSettings: AppSettings
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(
         SettingsUiState(
-            backendType    = appSettings.backendType,
-            geminiApiKey   = appSettings.geminiApiKey,
+            backendMode     = appSettings.backendMode,
+            geminiApiKey    = appSettings.geminiApiKey,
             geminiModelName = appSettings.geminiModelName
         )
     )
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
-    fun setBackendType(type: BackendType) {
-        _uiState.update { it.copy(backendType = type, isSaved = false) }
+    fun setBackendMode(mode: BackendMode) {
+        _uiState.update { it.copy(backendMode = mode, isSaved = false) }
     }
 
     fun setApiKey(key: String) {
@@ -55,8 +53,8 @@ class SettingsViewModel @Inject constructor(
 
     fun save() {
         val s = _uiState.value
-        appSettings.backendType    = s.backendType
-        appSettings.geminiApiKey   = s.geminiApiKey
+        appSettings.backendMode     = s.backendMode
+        appSettings.geminiApiKey    = s.geminiApiKey
         appSettings.geminiModelName = s.geminiModelName
         _uiState.update { it.copy(isSaved = true) }
     }

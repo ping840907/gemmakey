@@ -13,14 +13,39 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.gemmakey.ai.BackendType
+import com.gemmakey.ai.BackendMode
 import com.gemmakey.viewmodel.GEMINI_MODELS
 import com.gemmakey.viewmodel.SettingsViewModel
+
+private data class ModeOption(
+    val mode: BackendMode,
+    val title: String,
+    val subtitle: String
+)
+
+private val MODE_OPTIONS = listOf(
+    ModeOption(
+        BackendMode.SMART,
+        "智慧切換（建議）",
+        "有網路時使用 Gemini，離線或 API 失效時自動切回本機 Gemma"
+    ),
+    ModeOption(
+        BackendMode.GEMINI_ONLY,
+        "Gemini API（雲端）",
+        "速度快，支援最新模型，需 API Key；無網路時無法使用"
+    ),
+    ModeOption(
+        BackendMode.GEMMA_ONLY,
+        "本機 Gemma（隱私）",
+        "完全離線，不連線任何雲端服務，保護隱私"
+    ),
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -45,33 +70,30 @@ fun SettingsScreen(
     ) {
         Text("推論後端", style = MaterialTheme.typography.titleMedium)
 
-        // ── Backend selection ────────────────────────────────────────────────
+        // ── Backend mode selection ───────────────────────────────────────────
         Card {
             Column(Modifier.padding(8.dp)) {
-                BackendType.entries.forEach { type ->
+                MODE_OPTIONS.forEach { option ->
+                    // GEMINI_ONLY requires an API key to be usable
+                    val enabled = option.mode != BackendMode.GEMINI_ONLY ||
+                                  uiState.geminiApiKey.isNotBlank()
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 8.dp),
+                            .padding(horizontal = 8.dp)
+                            .alpha(if (enabled) 1f else 0.38f),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         RadioButton(
-                            selected = uiState.backendType == type,
-                            onClick  = { viewModel.setBackendType(type) }
+                            selected = uiState.backendMode == option.mode,
+                            onClick  = { if (enabled) viewModel.setBackendMode(option.mode) },
+                            enabled  = enabled
                         )
                         Column(Modifier.padding(start = 8.dp)) {
+                            Text(option.title, style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                when (type) {
-                                    BackendType.GEMMA_LOCAL -> "本機 Gemma（離線，不需 API Key）"
-                                    BackendType.GEMINI_API  -> "Gemini API（雲端，需 API Key）"
-                                },
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                            Text(
-                                when (type) {
-                                    BackendType.GEMMA_LOCAL -> "模型運行於裝置端，保護隱私"
-                                    BackendType.GEMINI_API  -> "速度快，支援最新 Gemini 模型"
-                                },
+                                if (!enabled) "${option.subtitle}（請先設定 API Key）"
+                                else option.subtitle,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -81,8 +103,11 @@ fun SettingsScreen(
             }
         }
 
-        // ── Gemini settings (shown only when Gemini is selected) ─────────────
-        AnimatedVisibility(visible = uiState.backendType == BackendType.GEMINI_API) {
+        // ── Gemini settings (shown when Gemini is involved) ─────────────────
+        AnimatedVisibility(
+            visible = uiState.backendMode == BackendMode.GEMINI_ONLY ||
+                      uiState.backendMode == BackendMode.SMART
+        ) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
 
                 Text("Gemini 設定", style = MaterialTheme.typography.titleMedium)

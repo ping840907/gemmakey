@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.gemmakey.ai.BackendMode
 import com.gemmakey.ai.BackendType
 import com.gemmakey.ai.InferenceBackend
 import com.gemmakey.ui.components.ConfirmationDialog
@@ -66,6 +67,8 @@ fun ChatScreen(viewModel: ChatViewModel = hiltViewModel()) {
         // ── 後端狀態列 ───────────────────────────────────────────────────────
         InferenceStatusBar(
             backendType = uiState.backendType,
+            backendMode = uiState.backendMode,
+            isOnline    = uiState.isOnline,
             isReady     = uiState.inferenceState.isReady,
             hwBackend   = uiState.inferenceState.backend,
             isLoading   = uiState.inferenceState.isLoading,
@@ -101,12 +104,18 @@ fun ChatScreen(viewModel: ChatViewModel = hiltViewModel()) {
 @Composable
 private fun InferenceStatusBar(
     backendType: BackendType,
+    backendMode: BackendMode,
+    isOnline: Boolean,
     isReady: Boolean,
     hwBackend: InferenceBackend,
     isLoading: Boolean,
     error: String?
 ) {
     AnimatedVisibility(visible = isLoading || error != null || isReady) {
+        val smartTag = if (backendMode == BackendMode.SMART) {
+            if (isOnline) " · 🌐 自動" else " · 📵 離線"
+        } else ""
+
         val (color, text) = when {
             isLoading -> MaterialTheme.colorScheme.secondaryContainer to when (backendType) {
                 BackendType.GEMINI_API  -> "正在連線 Gemini API…"
@@ -114,14 +123,14 @@ private fun InferenceStatusBar(
             }
             error != null -> MaterialTheme.colorScheme.errorContainer to "⚠️ $error"
             backendType == BackendType.GEMINI_API ->
-                MaterialTheme.colorScheme.tertiaryContainer to "✦ Gemini API 就緒"
+                MaterialTheme.colorScheme.tertiaryContainer to "✦ Gemini API 就緒$smartTag"
             else -> {
                 val label = when (hwBackend) {
                     InferenceBackend.NPU -> "NPU 加速 ⚡"
                     InferenceBackend.GPU -> "GPU 加速"
                     InferenceBackend.CPU -> "CPU 運算"
                 }
-                MaterialTheme.colorScheme.primaryContainer to "✓ Gemma 4 就緒 · $label"
+                MaterialTheme.colorScheme.primaryContainer to "✓ Gemma 4 就緒 · $label$smartTag"
             }
         }
         Row(

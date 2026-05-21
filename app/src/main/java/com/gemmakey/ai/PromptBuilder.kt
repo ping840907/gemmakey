@@ -6,21 +6,16 @@ import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * 負責建構純文字的 system instruction 和 RAG 上下文。
- * Function calling 改由 ExpenseToolSet（@Tool 反射式）處理，
- * 不再需要手動注入 <tool> token。
- */
 @Singleton
 class PromptBuilder @Inject constructor() {
 
     private val dateFormatter = DateTimeFormatter.ofPattern("yyyy/MM/dd")
 
-    // ── System Instruction（動態注入今日日期，每次對話開始時取得）───────────
+    // ── System Instruction ────────────────────────────────────────────────────
 
     fun buildSystemInstruction(): String {
         val today = java.time.LocalDate.now()
-        val todayStr = today.format(DateTimeFormatter.ISO_LOCAL_DATE)  // yyyy-MM-dd
+        val todayStr = today.format(DateTimeFormatter.ISO_LOCAL_DATE)
         val todayChinese = today.format(DateTimeFormatter.ofPattern("yyyy年M月d日"))
         return """
 你是 GemmaKey 智慧記帳助理。今天是 $todayChinese（$todayStr）。
@@ -28,6 +23,7 @@ class PromptBuilder @Inject constructor() {
 【資料庫記錄說明】
 每次用戶訊息前會附上「歷史記帳資料庫」區塊，這些是已儲存的資料，僅用於回答查詢，絕對不可重複記錄。
 只有「用戶新訊息」區塊才是用戶當前的新請求。
+若有「之前的對話記錄」區塊，代表本次對話因網路切換而延續，請依此語境回答。
 
 【記帳規則】
 當用戶在「用戶新訊息」中描述新的消費或收入時，呼叫 record_expense 工具記錄。
@@ -44,25 +40,43 @@ date 欄位規則：
 """.trimIndent()
     }
 
-    // 向後相容的 val（chatViewModel 改呼叫 buildSystemInstruction()）
     val systemInstruction: String get() = buildSystemInstruction()
 
-    // ── 使用者訊息建構 ────────────────────────────────────────────────────────
+    // ── User message builder ──────────────────────────────────────────────────
 
-    fun buildUserMessage(userInput: String, ragContext: String = ""): String {
-        if (ragContext.isBlank()) return userInput
-        return "【歷史記帳資料庫（已儲存，僅供查詢，禁止重複記錄）】\n$ragContext\n\n【用戶新訊息】\n$userInput"
+    /**
+     * Builds the prompt sent to either backend.
+     * [priorHistory] is injected only on the first message after a backend switch,
+     * so Gemma's KV-cache gets the cross-backend context without re-injecting every turn.
+     */
+    fun buildUserMessage(
+        userInput: String,
+        ragContext: String = "",
+        priorHistory: List<ConversationTurn> = emptyList()
+    ): String {
+        val parts = mutableListOf<String>()
+
+        if (priorHistory.isNotEmpty()) {
+            val histText = priorHistory.joinToString("\n") { t ->
+                "[用戶]：${t.userText}\n[助理]：${t.assistantText}"
+            }
+            parts += "【之前的對話記錄（網路切換前，請延續語境）】\n$histText"
+        }
+
+        if (ragContext.isNotBlank()) {
+            parts += "【歷史記帳資料庫（已儲存，僅供查詢，禁止重複記錄）】\n$ragContext"
+        }
+
+        parts += "【用戶新訊息】\n$userInput"
+        return parts.joinToString("\n\n")
     }
 
     fun buildImageInstruction(userHint: String = ""): String =
         userHint.ifBlank { "請分析圖片（收據或帳單），識別消費資訊後呼叫 record_expense 工具。" }
 
-    // ── RAG 上下文格式化 ──────────────────────────────────────────────────────
+    // ── RAG context formatter ─────────────────────────────────────────────────
 
     fun formatRAGContext(entries: List<ExpenseEntry>): String {
-        // Always return a non-blank string so buildUserMessage always injects the database
-        // section. Without this, an empty list → blank ragContext → no section injected →
-        // model falls back to conversation history and can hallucinate unconfirmed entries.
         if (entries.isEmpty()) return "（資料庫目前無任何記帳記錄）"
         return entries.joinToString("\n") { e ->
             val sign = if (e.type == ExpenseType.INCOME) "+" else "-"

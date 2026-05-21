@@ -82,6 +82,27 @@ class GeminiChatManager @Inject constructor(
         chat = model?.startChat()
     }
 
+    /**
+     * Rebuild the chat session preserving prior conversation turns.
+     * Called when switching from Gemma → Gemini so the cloud model
+     * sees the full cross-backend dialogue history.
+     */
+    fun rebuildSession(history: List<ConversationTurn>) {
+        val m = model ?: return
+        if (history.isEmpty()) {
+            chat = m.startChat()
+            return
+        }
+        val contents = history.flatMap { turn ->
+            listOf(
+                content("user")  { text(turn.userText) },
+                content("model") { text(turn.assistantText) }
+            )
+        }
+        chat = m.startChat(history = contents)
+        Log.d(TAG, "Session rebuilt with ${history.size} prior turn(s)")
+    }
+
     fun isReady(): Boolean = model != null && state.isReady
 
     // ── 串流推論 ──────────────────────────────────────────────────────────────

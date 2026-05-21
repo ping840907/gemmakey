@@ -4,11 +4,14 @@ import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.gemmakey.ai.AppSettings
+import com.gemmakey.ai.BackendMode
 import com.gemmakey.ai.BackendType
+import com.gemmakey.ai.ConversationTurn
 import com.gemmakey.ai.ExpenseToolSet
 import com.gemmakey.ai.GeminiChatManager
 import com.gemmakey.ai.GemmaInferenceManager
 import com.gemmakey.ai.InferenceState
+import com.gemmakey.ai.NetworkMonitor
 import com.gemmakey.ai.PromptBuilder
 import com.gemmakey.ai.RAGManager
 import com.gemmakey.data.repository.ExpenseRepository
@@ -28,6 +31,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
+private const val MAX_HISTORY_TURNS    = 10  // max turns kept for cross-backend sharing
+private const val MAX_HISTORY_TO_GEMMA = 5   // turns injected as text prefix into Gemma
+
 private val WELCOME_MESSAGE = ChatMessage(
     role = MessageRole.ASSISTANT,
     text = "你好！我是 GemmaKey 記帳助理 ✨\n\n你可以：\n• 直接說「午餐花了 150 元」讓我記錄\n• 拍下收據或帳單讓我辨識\n• 問我「這個月花了多少」等問題"
@@ -38,6 +44,8 @@ data class ChatUiState(
     val isGenerating: Boolean = false,
     val inferenceState: InferenceState = InferenceState(),
     val backendType: BackendType = BackendType.GEMMA_LOCAL,
+    val backendMode: BackendMode = BackendMode.GEMMA_ONLY,
+    val isOnline: Boolean = false,
     val pendingExpense: ParsedExpense? = null,
     val pendingRawInput: String = ""
 )
@@ -49,62 +57,159 @@ class ChatViewModel @Inject constructor(
     private val promptBuilder: PromptBuilder,
     private val ragManager: RAGManager,
     private val repository: ExpenseRepository,
-    private val appSettings: AppSettings
+    private val appSettings: AppSettings,
+    private val networkMonitor: NetworkMonitor
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
+    // Gemma per-session state
     private val toolSet = ExpenseToolSet()
     private var conversation: Conversation? = null
 
+    // Cross-backend conversation history (raw text, no RAG prefixes)
+    private val conversationHistory = mutableListOf<ConversationTurn>()
+
+    // History to inject into Gemma on the next message after a backend switch
+    private var pendingHistoryForGemma: List<ConversationTurn> = emptyList()
+
     init {
         viewModelScope.launch { initModel() }
+        viewModelScope.launch { observeNetwork() }
     }
 
-    // ── 初始化 ────────────────────────────────────────────────────────────────
+    // ── Network observation ───────────────────────────────────────────────────
+
+    private suspend fun observeNetwork() {
+        networkMonitor.isOnline.collect { online ->
+            _uiState.update { it.copy(isOnline = online) }
+            if (appSettings.backendMode == BackendMode.SMART) {
+                handleSmartSwitch(online)
+            }
+        }
+    }
+
+    private fun handleSmartSwitch(online: Boolean) {
+        val target = if (online) BackendType.GEMINI_API else BackendType.GEMMA_LOCAL
+        if (_uiState.value.backendType == target) return
+
+        if (_uiState.value.isGenerating) {
+            // Defer: will be checked at the end of the current generation
+            return
+        }
+        viewModelScope.launch { performSwitch(target, notify = true) }
+    }
+
+    // ── Initialisation ────────────────────────────────────────────────────────
 
     private suspend fun initModel() {
-        val backend = appSettings.backendType
+        val mode   = appSettings.backendMode
+        val online = networkMonitor.isOnline.value
+        val target = resolveActiveBackend(mode, online)
+
         _uiState.update { it.copy(
             inferenceState = InferenceState(isLoading = true),
-            backendType = backend
+            backendType    = target,
+            backendMode    = mode,
+            isOnline       = online
         ) }
 
-        val state = when (backend) {
-            BackendType.GEMMA_LOCAL -> {
-                val s = gemma.initialize()
-                if (s.isReady) {
-                    conversation = withContext(Dispatchers.IO) { createNewConversation() }
-                }
-                s
-            }
-            BackendType.GEMINI_API -> gemini.initialize(
-                apiKey    = appSettings.geminiApiKey,
-                modelName = appSettings.geminiModelName
-            )
+        var activeTarget = target
+        var state = when (target) {
+            BackendType.GEMMA_LOCAL -> initGemma()
+            BackendType.GEMINI_API  -> initGemini()
         }
 
-        _uiState.update { it.copy(inferenceState = state, backendType = backend) }
-        if (state.error != null) appendAssistantMessage("⚠️ ${state.error}")
+        // Gemini failed on startup → fall back to Gemma so the app remains usable
+        var fallbackMsg: String? = null
+        if (!state.isReady && target == BackendType.GEMINI_API) {
+            val gemmaState = initGemma()
+            if (gemmaState.isReady) {
+                activeTarget = BackendType.GEMMA_LOCAL
+                state = gemmaState
+                fallbackMsg = "⚠️ Gemini 無法使用，已自動切換至本機 Gemma"
+            }
+        }
+
+        _uiState.update { it.copy(inferenceState = state, backendType = activeTarget, backendMode = mode) }
+        when {
+            fallbackMsg != null                  -> appendAssistantMessage(fallbackMsg)
+            !state.isReady && state.error != null -> appendAssistantMessage("⚠️ ${state.error}")
+        }
     }
+
+    private suspend fun initGemma(): InferenceState {
+        val s = gemma.initialize()
+        if (s.isReady) conversation = withContext(Dispatchers.IO) { createNewConversation() }
+        return s
+    }
+
+    private fun initGemini(): InferenceState =
+        gemini.initialize(appSettings.geminiApiKey, appSettings.geminiModelName)
+
+    // ── Explicit reinitialise (called from Settings after save) ───────────────
 
     fun reinitialize() {
         if (_uiState.value.isGenerating) return
         viewModelScope.launch {
-            // Fully tear down both backends before switching — prevents engine leaks
-            // when the user switches between GEMMA_LOCAL and GEMINI_API.
             withContext(Dispatchers.IO) {
-                conversation?.close()
-                conversation = null
-                gemma.close()   // no-op if not initialized; must close to free ~2 GB RAM
-                gemini.close()  // no-op if not initialized
+                conversation?.close(); conversation = null
+                gemma.close()
+                gemini.close()
             }
             toolSet.clearLastCall()
+            conversationHistory.clear()
+            pendingHistoryForGemma = emptyList()
             _uiState.update {
                 it.copy(messages = listOf(WELCOME_MESSAGE), pendingExpense = null, pendingRawInput = "")
             }
             initModel()
+        }
+    }
+
+    // ── Smart backend switching ───────────────────────────────────────────────
+
+    private suspend fun performSwitch(target: BackendType, notify: Boolean) {
+        val currentBackend = _uiState.value.backendType
+        if (currentBackend == target) return
+
+        when (target) {
+            BackendType.GEMINI_API -> {
+                // Ensure Gemini is initialised (may already be from a previous switch)
+                if (!gemini.isReady()) {
+                    _uiState.update { it.copy(inferenceState = InferenceState(isLoading = true)) }
+                    val state = withContext(Dispatchers.IO) { initGemini() }
+                    if (!state.isReady) {
+                        _uiState.update { it.copy(inferenceState = state) }
+                        return
+                    }
+                }
+                // Rebuild Gemini chat with shared history so it continues the same conversation
+                withContext(Dispatchers.IO) { gemini.rebuildSession(conversationHistory) }
+                _uiState.update { it.copy(backendType = BackendType.GEMINI_API, inferenceState = gemini.state) }
+                if (notify) appendAssistantMessage("🌐 已連線，切換回 Gemini API 繼續對話")
+            }
+
+            BackendType.GEMMA_LOCAL -> {
+                // Ensure Gemma is initialised
+                if (!gemma.state.isReady) {
+                    _uiState.update { it.copy(inferenceState = InferenceState(isLoading = true)) }
+                    val state = withContext(Dispatchers.IO) { initGemma() }
+                    if (!state.isReady) {
+                        _uiState.update { it.copy(inferenceState = state) }
+                        return
+                    }
+                } else if (conversation == null) {
+                    conversation = withContext(Dispatchers.IO) { createNewConversation() }
+                }
+                // Schedule history injection for the next Gemma message
+                if (conversationHistory.isNotEmpty()) {
+                    pendingHistoryForGemma = conversationHistory.takeLast(MAX_HISTORY_TO_GEMMA)
+                }
+                _uiState.update { it.copy(backendType = BackendType.GEMMA_LOCAL, inferenceState = gemma.state) }
+                if (notify) appendAssistantMessage("📱 網路離線，切換至本機 Gemma 繼續對話")
+            }
         }
     }
 
@@ -113,26 +218,29 @@ class ChatViewModel @Inject constructor(
     private suspend fun createNewConversation(): Conversation? =
         runCatching {
             @Suppress("UNCHECKED_CAST")
-            val toolProviders = listOf(toolSet as Any as ToolProvider)
-            gemma.createConversation(systemInstruction = promptBuilder.systemInstruction, tools = toolProviders)
+            gemma.createConversation(
+                systemInstruction = promptBuilder.systemInstruction,
+                tools = listOf(toolSet as Any as ToolProvider)
+            )
         }.recoverCatching {
             gemma.createConversation(systemInstruction = promptBuilder.systemInstruction)
         }.getOrNull()
 
-    // ── 清除對話 ──────────────────────────────────────────────────────────────
+    // ── Clear conversation ────────────────────────────────────────────────────
 
     fun clearConversation() {
         if (_uiState.value.isGenerating) return
         toolSet.clearLastCall()
         gemini.clearToolCall()
+        conversationHistory.clear()
+        pendingHistoryForGemma = emptyList()
         _uiState.update {
             it.copy(messages = listOf(WELCOME_MESSAGE), pendingExpense = null, pendingRawInput = "")
         }
         viewModelScope.launch {
-            when (appSettings.backendType) {
+            when (_uiState.value.backendType) {
                 BackendType.GEMMA_LOCAL -> {
-                    conversation?.close()
-                    conversation = null
+                    conversation?.close(); conversation = null
                     if (gemma.state.isReady) {
                         conversation = withContext(Dispatchers.IO) { createNewConversation() }
                     }
@@ -142,7 +250,7 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    // ── 使用者輸入 ────────────────────────────────────────────────────────────
+    // ── User input ────────────────────────────────────────────────────────────
 
     fun sendTextMessage(text: String) {
         if (text.isBlank() || _uiState.value.isGenerating) return
@@ -165,9 +273,18 @@ class ChatViewModel @Inject constructor(
         )
     }
 
-    // ── 核心推論流程 ──────────────────────────────────────────────────────────
+    // ── Core inference ────────────────────────────────────────────────────────
 
     private fun processInput(userText: String, bitmap: Bitmap?, rawInput: String) {
+        val state = _uiState.value
+        if (!state.inferenceState.isReady) {
+            appendAssistantMessage(
+                if (state.inferenceState.isLoading) "⏳ 模型載入中，請稍候…"
+                else "⚠️ 推論引擎尚未就緒"
+            )
+            return
+        }
+
         viewModelScope.launch {
             _uiState.update { it.copy(isGenerating = true) }
             val loadingId = System.currentTimeMillis()
@@ -175,26 +292,66 @@ class ChatViewModel @Inject constructor(
 
             try {
                 val ragContext = ragManager.buildContext(userText)
-                val messageText = promptBuilder.buildUserMessage(userText, ragContext)
 
-                when (appSettings.backendType) {
+                // Consume pending history injection (only once after a backend switch to Gemma)
+                val history = pendingHistoryForGemma
+                pendingHistoryForGemma = emptyList()
+
+                val messageText = promptBuilder.buildUserMessage(userText, ragContext, history)
+
+                val assistantReply = when (_uiState.value.backendType) {
                     BackendType.GEMMA_LOCAL -> processWithGemma(messageText, bitmap, loadingId, rawInput)
-                    BackendType.GEMINI_API  -> processWithGemini(messageText, bitmap, loadingId, rawInput)
+                    BackendType.GEMINI_API  -> {
+                        try {
+                            processWithGemini(messageText, bitmap, loadingId, rawInput)
+                        } catch (e: Exception) {
+                            if (appSettings.backendMode == BackendMode.SMART) {
+                                // Gemini unavailable (API error, billing limit, etc.) → fall back to Gemma
+                                updateLoadingMessage(loadingId, "⚠️ Gemini 無法使用，切換至本機 Gemma…")
+                                performSwitch(BackendType.GEMMA_LOCAL, notify = false)
+                                if (_uiState.value.inferenceState.isReady) {
+                                    val fallbackHistory = pendingHistoryForGemma
+                                    pendingHistoryForGemma = emptyList()
+                                    val fallbackMsg = promptBuilder.buildUserMessage(userText, ragContext, fallbackHistory)
+                                    processWithGemma(fallbackMsg, bitmap, loadingId, rawInput)
+                                } else {
+                                    finaliseMessage(loadingId, "❌ Gemini 無法使用，且 Gemma 也無法啟動")
+                                    null
+                                }
+                            } else {
+                                throw e
+                            }
+                        }
+                    }
+                }
+
+                // Record the exchange in shared history (raw text only)
+                if (assistantReply != null) {
+                    conversationHistory += ConversationTurn(userText, assistantReply)
+                    if (conversationHistory.size > MAX_HISTORY_TURNS) {
+                        conversationHistory.removeAt(0)
+                    }
                 }
             } catch (e: Exception) {
                 finaliseMessage(loadingId, "❌ 發生錯誤：${e.message}")
             } finally {
                 _uiState.update { it.copy(isGenerating = false) }
+                // Check if a smart switch was deferred during generation
+                if (appSettings.backendMode == BackendMode.SMART) {
+                    val online = networkMonitor.isOnline.value
+                    val target = if (online) BackendType.GEMINI_API else BackendType.GEMMA_LOCAL
+                    if (_uiState.value.backendType != target) {
+                        performSwitch(target, notify = true)
+                    }
+                }
             }
         }
     }
 
+    // Returns the final assistant text (for history), or null if it was a tool call preview
     private suspend fun processWithGemma(
-        messageText: String,
-        bitmap: Bitmap?,
-        loadingId: Long,
-        rawInput: String
-    ) {
+        messageText: String, bitmap: Bitmap?, loadingId: Long, rawInput: String
+    ): String? {
         toolSet.clearLastCall()
         val responseBuilder = StringBuilder()
         val stream = if (bitmap != null)
@@ -207,25 +364,24 @@ class ChatViewModel @Inject constructor(
             updateLoadingMessage(loadingId, responseBuilder.toString())
         }
 
-        if (toolSet.lastCall == null) {
-            toolSet.parseFromToolCallText(responseBuilder.toString())
-        }
+        if (toolSet.lastCall == null) toolSet.parseFromToolCallText(responseBuilder.toString())
+
         val toolResult = toolSet.lastCall
-        if (toolResult != null) {
+        return if (toolResult != null) {
             finaliseMessage(loadingId, buildPreviewText(toolResult))
             _uiState.update { it.copy(pendingExpense = toolResult, pendingRawInput = rawInput) }
             toolSet.clearLastCall()
+            null // tool call: no text to add to history yet
         } else {
-            finaliseMessage(loadingId, responseBuilder.toString().trim().ifBlank { "（無回應）" })
+            val reply = responseBuilder.toString().trim().ifBlank { "（無回應）" }
+            finaliseMessage(loadingId, reply)
+            reply
         }
     }
 
     private suspend fun processWithGemini(
-        messageText: String,
-        bitmap: Bitmap?,
-        loadingId: Long,
-        rawInput: String
-    ) {
+        messageText: String, bitmap: Bitmap?, loadingId: Long, rawInput: String
+    ): String? {
         gemini.clearToolCall()
         val responseBuilder = StringBuilder()
 
@@ -235,12 +391,15 @@ class ChatViewModel @Inject constructor(
         }
 
         val toolResult = gemini.lastToolCall
-        if (toolResult != null) {
+        return if (toolResult != null) {
             finaliseMessage(loadingId, buildPreviewText(toolResult))
             _uiState.update { it.copy(pendingExpense = toolResult, pendingRawInput = rawInput) }
             gemini.clearToolCall()
+            null
         } else {
-            finaliseMessage(loadingId, responseBuilder.toString().trim().ifBlank { "（無回應）" })
+            val reply = responseBuilder.toString().trim().ifBlank { "（無回應）" }
+            finaliseMessage(loadingId, reply)
+            reply
         }
     }
 
@@ -250,7 +409,7 @@ class ChatViewModel @Inject constructor(
         return "📊 偵測到記帳內容：\n${p.category.emoji} ${p.category.displayName}｜$sign$amount\n${p.description}\n\n👆 請在下方確認"
     }
 
-    // ── 確認 Dialog 回呼 ──────────────────────────────────────────────────────
+    // ── Confirmation dialog callbacks ─────────────────────────────────────────
 
     fun confirmSave(entry: ExpenseEntry) {
         viewModelScope.launch {
@@ -258,7 +417,7 @@ class ChatViewModel @Inject constructor(
             _uiState.update { it.copy(pendingExpense = null, pendingRawInput = "") }
 
             val confirmMsg = withContext(Dispatchers.IO) {
-                when (appSettings.backendType) {
+                when (_uiState.value.backendType) {
                     BackendType.GEMMA_LOCAL -> runCatching {
                         gemma.generate(
                             "工具執行成功：已儲存「${entry.category.displayName} NT\$${entry.amount.toLong()}」(id=$savedId)。請用一句話確認。",
@@ -279,12 +438,18 @@ class ChatViewModel @Inject constructor(
                 }
             }
             appendAssistantMessage(confirmMsg)
+            // Add the save confirmation to history
+            conversationHistory += ConversationTurn(
+                userText      = "（確認記帳）${entry.category.displayName} NT\$${entry.amount.toLong()}",
+                assistantText = confirmMsg
+            )
+            if (conversationHistory.size > MAX_HISTORY_TURNS) conversationHistory.removeAt(0)
         }
     }
 
     fun dismissConfirmation() {
         _uiState.update { it.copy(pendingExpense = null, pendingRawInput = "") }
-        if (appSettings.backendType == BackendType.GEMINI_API) {
+        if (_uiState.value.backendType == BackendType.GEMINI_API) {
             viewModelScope.launch {
                 withContext(Dispatchers.IO) {
                     runCatching {
@@ -299,37 +464,29 @@ class ChatViewModel @Inject constructor(
         appendAssistantMessage("已取消，如需重新記帳請再說一次。")
     }
 
-    // ── 訊息管理 ──────────────────────────────────────────────────────────────
+    // ── Message list helpers ──────────────────────────────────────────────────
 
     private fun appendUserMessage(text: String, bitmap: Bitmap? = null) {
         _uiState.update { s ->
-            s.copy(messages = s.messages + ChatMessage(
-                role = MessageRole.USER, text = text, imageBitmap = bitmap
-            ))
+            s.copy(messages = s.messages + ChatMessage(role = MessageRole.USER, text = text, imageBitmap = bitmap))
         }
     }
 
     private fun appendAssistantMessage(text: String) {
         _uiState.update { s ->
-            s.copy(messages = s.messages + ChatMessage(
-                role = MessageRole.ASSISTANT, text = text
-            ))
+            s.copy(messages = s.messages + ChatMessage(role = MessageRole.ASSISTANT, text = text))
         }
     }
 
     private fun appendLoadingMessage(id: Long) {
         _uiState.update { s ->
-            s.copy(messages = s.messages + ChatMessage(
-                id = id, role = MessageRole.ASSISTANT, text = "", isLoading = true
-            ))
+            s.copy(messages = s.messages + ChatMessage(id = id, role = MessageRole.ASSISTANT, text = "", isLoading = true))
         }
     }
 
     private fun updateLoadingMessage(id: Long, text: String) {
         _uiState.update { s ->
-            s.copy(messages = s.messages.map { m ->
-                if (m.id == id) m.copy(text = text) else m
-            })
+            s.copy(messages = s.messages.map { m -> if (m.id == id) m.copy(text = text) else m })
         }
     }
 
@@ -346,5 +503,13 @@ class ChatViewModel @Inject constructor(
         conversation?.close()
         gemma.close()
         gemini.close()
+    }
+
+    // ── Utility ───────────────────────────────────────────────────────────────
+
+    private fun resolveActiveBackend(mode: BackendMode, online: Boolean): BackendType = when (mode) {
+        BackendMode.GEMMA_ONLY  -> BackendType.GEMMA_LOCAL
+        BackendMode.GEMINI_ONLY -> BackendType.GEMINI_API
+        BackendMode.SMART       -> if (online) BackendType.GEMINI_API else BackendType.GEMMA_LOCAL
     }
 }
