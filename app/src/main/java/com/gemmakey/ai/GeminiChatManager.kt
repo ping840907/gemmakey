@@ -134,9 +134,10 @@ class GeminiChatManager @Inject constructor(
             }
 
             close()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Stream error", e)
-            trySend("❌ Gemini API 錯誤：${e.message}")
+            val msg = if (e is OutOfMemoryError) "❌ 圖片過大，記憶體不足" else "❌ Gemini API 錯誤：${e.message}"
+            trySend(msg)
             close(e)
         }
         awaitClose()

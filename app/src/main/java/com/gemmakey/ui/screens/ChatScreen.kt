@@ -21,6 +21,9 @@ import com.gemmakey.ui.components.InputBar
 import com.gemmakey.ui.components.MessageBubble
 import com.gemmakey.utils.ImageUtils
 import com.gemmakey.viewmodel.ChatViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -28,6 +31,7 @@ fun ChatScreen(viewModel: ChatViewModel = hiltViewModel()) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(uiState.messages.size) {
         if (uiState.messages.isNotEmpty()) {
@@ -94,8 +98,10 @@ fun ChatScreen(viewModel: ChatViewModel = hiltViewModel()) {
             onSendText    = viewModel::sendTextMessage,
             onVoiceResult = viewModel::sendVoiceResult,
             onImageSelected = { uri ->
-                val bitmap = ImageUtils.uriToBitmap(context, uri)
-                bitmap?.let { viewModel.sendImageMessage(it) }
+                scope.launch {
+                    val bitmap = withContext(Dispatchers.IO) { ImageUtils.uriToBitmap(context, uri) }
+                    bitmap?.let { viewModel.sendImageMessage(it) }
+                }
             }
         )
     }

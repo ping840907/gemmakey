@@ -333,8 +333,8 @@ class ChatViewModel @Inject constructor(
                     BackendType.GEMINI_API  -> {
                         try {
                             processWithGemini(messageText, bitmap, loadingId, rawInput)
-                        } catch (e: Exception) {
-                            if (appSettings.backendMode == BackendMode.SMART) {
+                        } catch (e: Throwable) {
+                            if (appSettings.backendMode == BackendMode.SMART && e !is OutOfMemoryError) {
                                 // Gemini unavailable (API error, billing limit, etc.) → fall back to Gemma
                                 updateLoadingMessage(loadingId, "⚠️ Gemini 無法使用，切換至本機 Gemma…")
                                 performSwitch(BackendType.GEMMA_LOCAL, notify = false)
@@ -342,7 +342,7 @@ class ChatViewModel @Inject constructor(
                                     val fallbackHistory = pendingHistoryForGemma
                                     pendingHistoryForGemma = emptyList()
                                     val fallbackMsg = promptBuilder.buildUserMessage(userText, ragContext, fallbackHistory)
-                                    processWithGemma(fallbackMsg, bitmap, loadingId, rawInput)
+                                    processWithGemma(fallbackMsg, null, loadingId, rawInput)
                                 } else {
                                     finaliseMessage(loadingId, "❌ Gemini 無法使用，且 Gemma 也無法啟動")
                                     null
@@ -361,8 +361,10 @@ class ChatViewModel @Inject constructor(
                         conversationHistory.removeAt(0)
                     }
                 }
-            } catch (e: Exception) {
-                finaliseMessage(loadingId, "❌ 發生錯誤：${e.message}")
+            } catch (e: Throwable) {
+                val errMsg = if (e is OutOfMemoryError) "❌ 圖片處理失敗：記憶體不足，請嘗試較小的圖片"
+                             else "❌ 發生錯誤：${e.message}"
+                finaliseMessage(loadingId, errMsg)
             } finally {
                 _uiState.update { it.copy(isGenerating = false) }
                 // Check if a smart switch was deferred during generation

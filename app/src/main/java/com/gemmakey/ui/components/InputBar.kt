@@ -78,7 +78,7 @@ fun InputBar(
     val cameraPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) cameraUri?.let { onImageSelected(it) }
+        if (granted) cameraUri?.let { cameraLauncher.launch(it) }
     }
 
     val cameraLauncher = rememberLauncherForActivityResult(
