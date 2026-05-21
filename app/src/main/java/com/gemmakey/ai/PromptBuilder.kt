@@ -31,7 +31,7 @@ class PromptBuilder @Inject constructor() {
 你是 GemmaKey 記帳助理。今天：$todayStr
 
 [任務]
-1. 用戶描述新消費或收入 → 立即呼叫 record_expense 工具記錄
+1. 用戶描述新消費或收入 → 輸出 <tool_call> 記錄（見格式）
 2. 用戶詢問歷史 → 根據「記帳資料庫」區塊的數據回答
 3. 其他對話 → 簡短繁體中文回覆
 
@@ -44,8 +44,12 @@ class PromptBuilder @Inject constructor() {
 - date：格式 yyyy-MM-dd。有提日期就換算，例「昨天」→ $yesterday；沒提就填 $todayStr
 - description：10 字內說明，不重複 category 名稱
 
+[工具輸出格式]
+記錄時必須輸出下方 JSON，不加其他說明。範例（午餐 150 元）：
+<tool_call>{"name":"record_expense","arguments":{"amount":150,"type":"EXPENSE","category":"FOOD","description":"午餐","date":"$todayStr"}}</tool_call>
+
 [禁止事項]
-- 禁止對「記帳資料庫」中的舊資料再次呼叫 record_expense
+- 禁止對「記帳資料庫」中的舊資料再次輸出 <tool_call>
 - 禁止捏造資料庫中不存在的金額或記錄
 """.trimIndent()
     }

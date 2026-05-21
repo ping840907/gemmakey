@@ -1,6 +1,5 @@
 package com.gemmakey.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -111,73 +110,68 @@ fun SettingsScreen(
             }
         }
 
-        // ── Gemini settings (shown when Gemini is involved) ─────────────────
-        AnimatedVisibility(
-            visible = uiState.backendMode == BackendMode.GEMINI_ONLY ||
-                      uiState.backendMode == BackendMode.SMART
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        // ── Gemini settings (always visible so the API key can be entered first) ──
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
 
-                Text("Gemini 設定", style = MaterialTheme.typography.titleMedium)
+            Text("Gemini 設定", style = MaterialTheme.typography.titleMedium)
 
-                OutlinedTextField(
-                    value = uiState.geminiApiKey,
-                    onValueChange = viewModel::setApiKey,
-                    label = { Text("API Key") },
-                    placeholder = { Text("AIza...") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    visualTransformation = if (showApiKey) VisualTransformation.None
-                                          else PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    trailingIcon = {
-                        IconButton(onClick = { showApiKey = !showApiKey }) {
-                            Icon(
-                                if (showApiKey) Icons.Default.VisibilityOff
-                                else Icons.Default.Visibility,
-                                contentDescription = null
-                            )
-                        }
-                    }
-                )
-
-                // Model picker
-                ExposedDropdownMenuBox(
-                    expanded = modelMenuExpanded,
-                    onExpandedChange = { modelMenuExpanded = it }
-                ) {
-                    OutlinedTextField(
-                        value = uiState.geminiModelName,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("模型") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(modelMenuExpanded) },
-                        modifier = Modifier
-                            .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                            .fillMaxWidth()
-                    )
-                    ExposedDropdownMenu(
-                        expanded = modelMenuExpanded,
-                        onDismissRequest = { modelMenuExpanded = false }
-                    ) {
-                        GEMINI_MODELS.forEach { name ->
-                            DropdownMenuItem(
-                                text = { Text(name) },
-                                onClick = {
-                                    viewModel.setModelName(name)
-                                    modelMenuExpanded = false
-                                }
-                            )
-                        }
+            OutlinedTextField(
+                value = uiState.geminiApiKey,
+                onValueChange = viewModel::setApiKey,
+                label = { Text("API Key") },
+                placeholder = { Text("AIza...") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = if (showApiKey) VisualTransformation.None
+                                      else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                trailingIcon = {
+                    IconButton(onClick = { showApiKey = !showApiKey }) {
+                        Icon(
+                            if (showApiKey) Icons.Default.VisibilityOff
+                            else Icons.Default.Visibility,
+                            contentDescription = null
+                        )
                     }
                 }
+            )
 
-                Text(
-                    "API Key 可至 aistudio.google.com 免費取得",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+            // Model picker
+            ExposedDropdownMenuBox(
+                expanded = modelMenuExpanded,
+                onExpandedChange = { modelMenuExpanded = it }
+            ) {
+                OutlinedTextField(
+                    value = uiState.geminiModelName,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("模型") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(modelMenuExpanded) },
+                    modifier = Modifier
+                        .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                        .fillMaxWidth()
                 )
+                ExposedDropdownMenu(
+                    expanded = modelMenuExpanded,
+                    onDismissRequest = { modelMenuExpanded = false }
+                ) {
+                    GEMINI_MODELS.forEach { name ->
+                        DropdownMenuItem(
+                            text = { Text(name) },
+                            onClick = {
+                                viewModel.setModelName(name)
+                                modelMenuExpanded = false
+                            }
+                        )
+                    }
+                }
             }
+
+            Text(
+                "API Key 可至 aistudio.google.com 免費取得",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         Spacer(Modifier.weight(1f))

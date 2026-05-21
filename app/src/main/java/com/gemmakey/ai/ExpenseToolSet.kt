@@ -6,6 +6,7 @@ import com.google.ai.edge.litertlm.ToolSet
 import com.gemmakey.model.ExpenseCategory
 import com.gemmakey.model.ExpenseType
 import com.gemmakey.model.ParsedExpense
+import org.json.JSONObject
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
@@ -64,33 +65,51 @@ class ExpenseToolSet : ToolSet {
 
     /**
      * Fallback parser for when LiteRT-LM native tool calling doesn't fire.
-     * Handles Gemma 4's raw output format:
-     *   <|tool_call|>call:record_expense{amount:120,category:"晚餐",date:"2026-05-19"}<|/tool_call|>
+     *
+     * Priority order:
+     *  1. <tool_call>{"name":"record_expense","arguments":{...}}</tool_call>  — Gemma 3/4 native format
+     *  2. call:record_expense{...}  — legacy LiteRT-LM format
+     *
      * Special quote tokens like <|"|> are normalised to " before matching.
      */
     fun parseFromToolCallText(response: String): ParsedExpense? {
         val normalized = response.replace(Regex("""<\|["']\|>"""), "\"")
 
-        // Match both record_expense and record_income (model sometimes uses wrong name for income)
-        val match = Regex(
+        // 1. Structured <tool_call> JSON format (Gemma instruction-tuned output)
+        val toolCallMatch = Regex(
+            """<tool_call>\s*(\{.*?\})\s*</tool_call>""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        ).find(normalized)
+        if (toolCallMatch != null) {
+            return parseToolCallJson(toolCallMatch.groupValues[1])
+        }
+
+        // 2. Bare JSON object that contains "record_expense"
+        val bareJsonMatch = Regex(
+            """\{[^{}]*"name"\s*:\s*"record_expense"[^{}]*\}""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        ).find(normalized)
+        if (bareJsonMatch != null) {
+            return parseToolCallJson(bareJsonMatch.value)
+        }
+
+        // 3. Legacy call:record_expense{...} format
+        val legacyMatch = Regex(
             """call\s*:\s*record_(expense|income)\s*\{([^}]+)\}""",
             setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
         ).find(normalized) ?: return null
 
-        val calledIncome = match.groupValues[1].equals("income", ignoreCase = true)
-        val args = match.groupValues[2]
+        val calledIncome = legacyMatch.groupValues[1].equals("income", ignoreCase = true)
+        val args = legacyMatch.groupValues[2]
 
         fun str(key: String): String? =
             Regex(""""?$key"?\s*:\s*"?([^",}\n]+)"?""", RegexOption.IGNORE_CASE)
                 .find(args)?.groupValues?.get(1)?.trim()?.trimEnd('"')
 
         val amount = str("amount")?.toDoubleOrNull()?.takeIf { it > 0 } ?: return null
-
         val typeRaw = str("type")?.uppercase() ?: ""
-        val isIncome = calledIncome ||
-                       typeRaw == "INCOME" ||
-                       typeRaw.contains("收入") ||
-                       typeRaw.contains("REVENUE")
+        val isIncome = calledIncome || typeRaw == "INCOME" ||
+                       typeRaw.contains("收入") || typeRaw.contains("REVENUE")
 
         lastCall = ParsedExpense(
             amount      = amount,
@@ -101,6 +120,28 @@ class ExpenseToolSet : ToolSet {
         )
         return lastCall
     }
+
+    private fun parseToolCallJson(json: String): ParsedExpense? = runCatching {
+        val obj  = JSONObject(json)
+        // Support both {"name":"record_expense","arguments":{...}} and flat {"amount":...}
+        val args = obj.optJSONObject("arguments") ?: obj
+
+        val amount = args.optDouble("amount", 0.0).takeIf { it > 0 } ?: return null
+        val typeRaw = args.optString("type", "").trim().uppercase()
+        val isIncome = typeRaw == "INCOME" || typeRaw.contains("收入")
+
+        val desc = args.optString("description", "").trim()
+        val cat  = args.optString("category", "").trim()
+
+        lastCall = ParsedExpense(
+            amount      = amount,
+            type        = if (isIncome) ExpenseType.INCOME else ExpenseType.EXPENSE,
+            category    = ExpenseCategory.fromString(cat),
+            description = desc.ifBlank { cat },
+            date        = parseDate(args.optString("date", ""))
+        )
+        lastCall
+    }.getOrNull()
 
     // ── 日期解析（支援 yyyy-MM-dd 及常見格式，失敗則 fallback 今日）─────────
     private fun parseDate(raw: String): LocalDate {
