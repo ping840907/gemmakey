@@ -199,15 +199,12 @@ class GeminiChatManager @Inject constructor(
         val fn = defineFunction(
             name        = "record_expense",
             description = "記錄一筆消費或收入到記帳系統。支出與收入均使用此工具，透過 type 欄位區分。",
-            parameters  = mapOf(
-                "amount"      to Schema.double("金額，正數"),
-                "type"        to Schema.str("EXPENSE（支出）或 INCOME（收入）"),
-                "category"    to Schema.str(
-                    "類別：FOOD/TRANSPORT/SHOPPING/ENTERTAINMENT/HEALTH/" +
-                    "EDUCATION/UTILITIES/HOUSING/SALARY/BONUS/INVESTMENT/OTHER"
-                ),
-                "description" to Schema.str("10 字以內的簡短說明"),
-                "date"        to Schema.str("交易日期，格式 yyyy-MM-dd")
+            parameters  = listOf(
+                Schema.double(name = "amount",      description = "金額，正數"),
+                Schema.str(name    = "type",        description = "EXPENSE（支出）或 INCOME（收入）"),
+                Schema.str(name    = "category",    description = "類別：FOOD/TRANSPORT/SHOPPING/ENTERTAINMENT/HEALTH/EDUCATION/UTILITIES/HOUSING/SALARY/BONUS/INVESTMENT/OTHER"),
+                Schema.str(name    = "description", description = "10 字以內的簡短說明"),
+                Schema.str(name    = "date",        description = "交易日期，格式 yyyy-MM-dd")
             ),
             requiredParameters = listOf("amount", "type", "category", "description", "date")
         )
