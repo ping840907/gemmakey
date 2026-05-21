@@ -237,8 +237,13 @@ class ChatViewModel @Inject constructor(
             gemma.createConversation(
                 systemInstruction = promptBuilder.buildGemmaSystemInstruction(),
                 tools = listOf(toolSet as Any as ToolProvider)
-            )
-        }.recoverCatching {
+            ).also {
+                android.util.Log.i("GemmaTools", "Native ToolProvider cast succeeded — tool calling active")
+            }
+        }.recoverCatching { e ->
+            // If this branch fires every time, ToolSet is not a ToolProvider subtype at runtime.
+            // Tool calling will rely entirely on parseFromToolCallText() text fallback.
+            android.util.Log.w("GemmaTools", "Native ToolProvider cast failed (${e.javaClass.simpleName}): falling back to text-only conversation. Tool calling via parseFromToolCallText only.")
             gemma.createConversation(systemInstruction = promptBuilder.buildGemmaSystemInstruction())
         }.getOrNull()
 
