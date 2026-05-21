@@ -81,7 +81,9 @@ fun SettingsScreen(
                         BackendMode.GEMINI_ONLY ->
                             if (uiState.geminiApiKey.isNotBlank()) true to null
                             else false to "請先設定 API Key"
-                        BackendMode.SMART       -> true to null
+                        BackendMode.SMART       ->
+                            if (uiState.isGemmaInstalled && uiState.geminiApiKey.isNotBlank()) true to null
+                            else false to "需同時設置 Gemma 模型與 Gemini API Key"
                     }
                     Row(
                         modifier = Modifier
