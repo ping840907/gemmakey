@@ -1,7 +1,10 @@
 package com.gemmakey.ai
 
+import com.gemmakey.data.database.CategoryTotal
+import com.gemmakey.model.ExpenseCategory
 import com.gemmakey.model.ExpenseEntry
 import com.gemmakey.model.ExpenseType
+import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -21,7 +24,8 @@ class PromptBuilder @Inject constructor() {
 你是 GemmaKey 智慧記帳助理。今天是 $todayChinese（$todayStr）。
 
 【資料庫記錄說明】
-每次用戶訊息前會附上「歷史記帳資料庫」區塊，這些是已儲存的資料，僅用於回答查詢，絕對不可重複記錄。
+當用戶詢問歷史記錄時，訊息中會附上「歷史記帳資料庫」區塊，這些是已儲存的資料，僅用於回答查詢，絕對不可重複記錄。
+若無「歷史記帳資料庫」區塊，代表本次訊息是新記帳請求，直接處理即可。
 只有「用戶新訊息」區塊才是用戶當前的新請求。
 若有「之前的對話記錄」區塊，代表本次對話因網路切換而延續，請依此語境回答。
 
@@ -64,7 +68,7 @@ date 欄位規則：
         }
 
         if (ragContext.isNotBlank()) {
-            parts += "【歷史記帳資料庫（已儲存，僅供查詢，禁止重複記錄）】\n$ragContext"
+            parts += "【歷史記帳資料庫（已儲存資料，僅供查詢，禁止重複記錄）】\n$ragContext"
         }
 
         parts += "【用戶新訊息】\n$userInput"
@@ -74,13 +78,47 @@ date 欄位規則：
     fun buildImageInstruction(userHint: String = ""): String =
         userHint.ifBlank { "請分析圖片（收據或帳單），識別消費資訊後呼叫 record_expense 工具。" }
 
-    // ── RAG context formatter ─────────────────────────────────────────────────
+    // ── RAG formatters ────────────────────────────────────────────────────────
 
+    /** Formats individual expense records (for detail queries). */
     fun formatRAGContext(entries: List<ExpenseEntry>): String {
-        if (entries.isEmpty()) return "（資料庫目前無任何記帳記錄）"
+        if (entries.isEmpty()) return "（查詢區間內無記帳記錄）"
         return entries.joinToString("\n") { e ->
             val sign = if (e.type == ExpenseType.INCOME) "+" else "-"
             "${e.date.format(dateFormatter)} ${e.category.emoji}${e.category.displayName} $sign${e.amount.toLong()} ${e.description}"
         }
+    }
+
+    /**
+     * Formats aggregated totals for summary queries (e.g. "本月花了多少").
+     * Much more token-efficient than listing individual records.
+     */
+    fun formatSummaryContext(
+        start: LocalDate,
+        end: LocalDate,
+        totalExpense: Double,
+        totalIncome: Double,
+        categoryTotals: List<CategoryTotal>
+    ): String {
+        val periodFmt = DateTimeFormatter.ofPattern("MM/dd")
+        val period = "${start.format(periodFmt)} ~ ${end.format(periodFmt)}"
+        val sb = StringBuilder("期間：$period\n")
+
+        if (totalExpense > 0) sb.append("支出合計：NT\$ ${totalExpense.toLong()}\n")
+        if (totalIncome > 0) sb.append("收入合計：NT\$ ${totalIncome.toLong()}\n")
+        if (totalExpense == 0.0 && totalIncome == 0.0) {
+            sb.append("（此期間無記帳記錄）")
+            return sb.toString().trimEnd()
+        }
+
+        val expenseCats = categoryTotals.filter { it.total > 0 }
+        if (expenseCats.isNotEmpty()) {
+            sb.append("分類統計：\n")
+            expenseCats.take(8).forEach { ct ->
+                val cat = ExpenseCategory.fromString(ct.category)
+                sb.append("  ${cat.emoji}${cat.displayName} NT\$ ${ct.total.toLong()}\n")
+            }
+        }
+        return sb.toString().trimEnd()
     }
 }

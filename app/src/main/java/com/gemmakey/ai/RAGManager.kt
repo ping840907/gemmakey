@@ -1,6 +1,8 @@
 package com.gemmakey.ai
 
+import com.gemmakey.data.database.CategoryTotal
 import com.gemmakey.data.repository.ExpenseRepository
+import com.gemmakey.model.ExpenseCategory
 import com.gemmakey.model.ExpenseEntry
 import java.time.LocalDate
 import javax.inject.Inject
@@ -11,57 +13,102 @@ class RAGManager @Inject constructor(
     private val repository: ExpenseRepository,
     private val promptBuilder: PromptBuilder
 ) {
-    // ── Public API ───────────────────────────────────────────────────────────
+    private enum class QueryIntent { RECORD, QUERY_SUMMARY, QUERY_DETAIL, GENERAL }
+
+    // ── Public API ────────────────────────────────────────────────────────────
 
     /**
-     * Build a RAG context string for the given user query.
-     * Combines keyword FTS search + recent records + date-range extraction.
+     * Returns a context string for the given user query, or empty string when
+     * no historical context is needed (recording, general chat).
+     *
+     * Intent routing:
+     *   RECORD        → ""  (no pollution of new-entry prompts)
+     *   QUERY_SUMMARY → aggregated totals (compact: ~5 lines)
+     *   QUERY_DETAIL  → targeted records matching date/keyword (no baseline dump)
+     *   GENERAL       → ""
      */
-    suspend fun buildContext(userQuery: String): String {
-        val entries = retrieveRelevant(userQuery)
-        return promptBuilder.formatRAGContext(entries)
+    suspend fun buildContext(userQuery: String): String = when (classifyIntent(userQuery)) {
+        QueryIntent.RECORD, QueryIntent.GENERAL -> ""
+        QueryIntent.QUERY_SUMMARY               -> buildSummaryContext(userQuery)
+        QueryIntent.QUERY_DETAIL                -> buildDetailContext(userQuery)
     }
 
-    // ── Retrieval logic ──────────────────────────────────────────────────────
+    // ── Intent classification ─────────────────────────────────────────────────
 
-    private suspend fun retrieveRelevant(query: String): List<ExpenseEntry> {
-        val results = mutableSetOf<Long>() // de-duplicate by id
+    private fun classifyIntent(query: String): QueryIntent {
+        // Summary query: user wants aggregated amounts
+        val summaryWords = listOf(
+            "多少", "幾元", "幾塊", "合計", "總計", "統計", "共花", "花了多少",
+            "總共", "收支", "結餘", "花費多", "消費多", "支出多"
+        )
+        if (summaryWords.any { query.contains(it) }) return QueryIntent.QUERY_SUMMARY
+
+        // Detail query: user wants to see specific records
+        val detailWords = listOf(
+            "哪些", "列出", "明細", "查看", "有沒有", "什麼時候", "哪天",
+            "幾筆", "記錄了", "查詢", "看看", "顯示"
+        )
+        if (detailWords.any { query.contains(it) }) return QueryIntent.QUERY_DETAIL
+
+        // Time reference without an amount → detail query
+        val timeWords = listOf("今天", "昨天", "本週", "這週", "上週", "本月", "這個月", "上個月", "最近", "近期")
+        val hasTimeRef = timeWords.any { query.contains(it) }
+        val hasAmount  = Regex("""\d+\s*[元塊圓]""").containsMatchIn(query)
+
+        if (hasTimeRef && !hasAmount) return QueryIntent.QUERY_DETAIL
+
+        // Amount + expense/income verb → recording a new entry
+        val expenseVerbs = listOf("花了", "買了", "付了", "消費", "花費", "吃了", "喝了", "搭了", "租了", "繳了")
+        val incomeVerbs  = listOf("收到", "收入", "薪水", "發薪", "獎金", "賺了", "領了")
+        val hasExpenseVerb = (expenseVerbs + incomeVerbs).any { query.contains(it) }
+
+        if (hasAmount && hasExpenseVerb) return QueryIntent.RECORD
+        if (hasAmount) return QueryIntent.RECORD   // amount alone is likely recording
+
+        return QueryIntent.GENERAL
+    }
+
+    // ── Summary context (aggregated totals) ──────────────────────────────────
+
+    private suspend fun buildSummaryContext(query: String): String {
+        val now = LocalDate.now()
+        val (start, end) = extractDateRange(query) ?: (now.withDayOfMonth(1) to now)
+
+        val (totalExpense, totalIncome) = repository.getTotals(start, end)
+        val categoryTotals = repository.getCategoryTotals(start, end)
+
+        return promptBuilder.formatSummaryContext(start, end, totalExpense, totalIncome, categoryTotals)
+    }
+
+    // ── Detail context (targeted record retrieval) ────────────────────────────
+
+    private suspend fun buildDetailContext(query: String): String {
+        val seen     = mutableSetOf<Long>()
         val combined = mutableListOf<ExpenseEntry>()
 
-        // 1. FTS keyword search
-        val keywords = extractKeywords(query)
-        for (keyword in keywords) {
-            if (keyword.length < 2) continue
-            try {
-                repository.searchByKeyword(keyword).forEach { e ->
-                    if (results.add(e.id)) combined.add(e)
-                }
-            } catch (_: Exception) {}
-        }
-
-        // 2. Date range extraction from query
+        // 1. Date range (most specific signal)
         extractDateRange(query)?.let { (start, end) ->
             repository.getByDateRange(start, end).forEach { e ->
-                if (results.add(e.id)) combined.add(e)
+                if (seen.add(e.id)) combined.add(e)
             }
         }
 
-        // 3. Always include last 14 days as baseline context
-        val recent = repository.getContextForRAG(20)
-        recent.forEach { e ->
-            if (results.add(e.id)) combined.add(e)
+        // 2. FTS keyword search
+        extractKeywords(query).filter { it.length >= 2 }.forEach { keyword ->
+            runCatching { repository.searchByKeyword(keyword) }.getOrNull()
+                ?.forEach { e -> if (seen.add(e.id)) combined.add(e) }
         }
 
-        // Sort by date desc, cap at 40 entries to stay within context budget
-        return combined.sortedByDescending { it.date }.take(40)
+        // No baseline "recent N records" — only inject what actually matches
+        val entries = combined.sortedByDescending { it.date }.take(25)
+        return promptBuilder.formatRAGContext(entries)
     }
 
-    // ── Keyword extraction (Chinese-aware) ──────────────────────────────────
+    // ── Keyword extraction ────────────────────────────────────────────────────
 
     private fun extractKeywords(query: String): List<String> {
         val result = mutableListOf<String>()
 
-        // Category Chinese keywords
         val categoryMap = mapOf(
             "餐" to "FOOD", "食" to "FOOD", "吃" to "FOOD", "飲" to "FOOD",
             "咖啡" to "FOOD", "早餐" to "FOOD", "午餐" to "FOOD", "晚餐" to "FOOD",
@@ -76,18 +123,19 @@ class RAGManager @Inject constructor(
             "薪" to "SALARY", "薪水" to "SALARY",
         )
 
-        for ((keyword, category) in categoryMap) {
+        categoryMap.forEach { (keyword, category) ->
             if (query.contains(keyword)) result.add(category)
         }
 
-        // Add raw Chinese segments as keywords too
-        val segments = query.split(Regex("[\\s,，。？?！!、]+"))
-        result.addAll(segments.filter { it.length in 2..8 })
+        // Raw Chinese segments as FTS terms
+        query.split(Regex("[\\s,，。？?！!、]+"))
+            .filter { it.length in 2..8 }
+            .let { result.addAll(it) }
 
         return result.distinct()
     }
 
-    // ── Date range extraction ────────────────────────────────────────────────
+    // ── Date range extraction ─────────────────────────────────────────────────
 
     private fun extractDateRange(query: String): Pair<LocalDate, LocalDate>? {
         val now = LocalDate.now()
