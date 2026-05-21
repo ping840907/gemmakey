@@ -1,0 +1,217 @@
+package com.gemmakey.ai
+
+import android.graphics.Bitmap
+import android.util.Log
+import com.gemmakey.model.ExpenseCategory
+import com.gemmakey.model.ExpenseType
+import com.gemmakey.model.ParsedExpense
+import com.google.ai.client.generativeai.GenerativeModel
+import com.google.ai.client.generativeai.type.BlockThreshold
+import com.google.ai.client.generativeai.type.FunctionCallPart
+import com.google.ai.client.generativeai.type.FunctionResponsePart
+import com.google.ai.client.generativeai.type.HarmCategory
+import com.google.ai.client.generativeai.type.SafetySetting
+import com.google.ai.client.generativeai.type.Schema
+import com.google.ai.client.generativeai.type.Tool
+import com.google.ai.client.generativeai.type.content
+import com.google.ai.client.generativeai.type.defineFunction
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
+import javax.inject.Inject
+import javax.inject.Singleton
+
+private const val TAG = "GeminiChat"
+
+@Singleton
+class GeminiChatManager @Inject constructor(
+    private val promptBuilder: PromptBuilder
+) {
+    private var model: GenerativeModel? = null
+    private var chat: com.google.ai.client.generativeai.Chat? = null
+
+    @Volatile var lastToolCall: ParsedExpense? = null
+        private set
+
+    var state: InferenceState = InferenceState()
+        private set
+
+    // ── 初始化（需要 API key）────────────────────────────────────────────────
+
+    fun initialize(apiKey: String, modelName: String = "gemini-2.0-flash"): InferenceState {
+        if (apiKey.isBlank()) {
+            state = InferenceState(error = "請先在設定中輸入 Gemini API Key")
+            return state
+        }
+        return try {
+            val expenseTool = buildExpenseTool()
+            val sysInstruction = content { text(promptBuilder.buildSystemInstruction()) }
+
+            model = GenerativeModel(
+                modelName = modelName,
+                apiKey = apiKey,
+                tools = listOf(expenseTool),
+                systemInstruction = sysInstruction,
+                safetySettings = listOf(
+                    SafetySetting(HarmCategory.HARASSMENT, BlockThreshold.ONLY_HIGH),
+                    SafetySetting(HarmCategory.HATE_SPEECH, BlockThreshold.ONLY_HIGH),
+                    SafetySetting(HarmCategory.SEXUALLY_EXPLICIT, BlockThreshold.ONLY_HIGH),
+                    SafetySetting(HarmCategory.DANGEROUS_CONTENT, BlockThreshold.ONLY_HIGH),
+                )
+            )
+            startNewSession()
+            state = InferenceState(isReady = true, backend = InferenceBackend.GPU)
+            Log.i(TAG, "Gemini initialized: $modelName")
+            state
+        } catch (e: Exception) {
+            Log.e(TAG, "Gemini init failed", e)
+            state = InferenceState(error = "Gemini 初始化失敗：${e.message}")
+            state
+        }
+    }
+
+    fun startNewSession() {
+        chat = model?.startChat()
+    }
+
+    fun isReady(): Boolean = model != null && state.isReady
+
+    // ── 串流推論 ──────────────────────────────────────────────────────────────
+
+    fun generateStream(prompt: String, bitmap: Bitmap? = null): Flow<String> = callbackFlow {
+        val c = chat ?: run { trySend("[Gemini 未初始化]"); close(); return@callbackFlow }
+        lastToolCall = null
+
+        try {
+            val inputContent = if (bitmap != null) {
+                content("user") {
+                    image(bitmap)
+                    text(prompt)
+                }
+            } else {
+                content("user") { text(prompt) }
+            }
+
+            val stream = c.sendMessageStream(inputContent)
+            val textBuffer = StringBuilder()
+
+            stream.collect { response ->
+                // Collect text chunks
+                response.text?.let {
+                    textBuffer.append(it)
+                    trySend(it)
+                }
+
+                // Check for function calls in this chunk
+                response.candidates?.firstOrNull()?.content?.parts
+                    ?.filterIsInstance<FunctionCallPart>()
+                    ?.firstOrNull()
+                    ?.let { parseFunctionCall(it) }
+            }
+
+            // If a function call was detected, clear the text (we'll show preview instead)
+            close()
+        } catch (e: Exception) {
+            Log.e(TAG, "Stream error", e)
+            trySend("❌ Gemini API 錯誤：${e.message}")
+            close(e)
+        }
+        awaitClose()
+    }.flowOn(Dispatchers.IO)
+
+    // ── 單次推論（確認訊息用）────────────────────────────────────────────────
+
+    suspend fun sendFunctionResponse(functionName: String, result: Map<String, String>): String =
+        withContext(Dispatchers.IO) {
+            val c = chat ?: return@withContext ""
+            try {
+                val jsonObj = JSONObject(result as Map<*, *>)
+                val responseContent = content("function") {
+                    part(FunctionResponsePart(functionName, jsonObj))
+                }
+                val response = c.sendMessage(responseContent)
+                response.text?.trim() ?: ""
+            } catch (e: Exception) {
+                Log.e(TAG, "Function response error", e)
+                ""
+            }
+        }
+
+    fun clearToolCall() { lastToolCall = null }
+
+    fun close() {
+        chat = null
+        model = null
+        state = InferenceState()
+    }
+
+    // ── Function call 解析 ────────────────────────────────────────────────────
+
+    private fun parseFunctionCall(funcCall: FunctionCallPart) {
+        if (funcCall.name != "record_expense") return
+        val args = funcCall.args ?: return
+
+        fun argStr(key: String): String? = args[key]?.let {
+            // args values may be JsonPrimitive, Number, String etc.
+            it.toString().trim('"', ' ')
+        }
+
+        val amount = argStr("amount")?.toDoubleOrNull()?.takeIf { it > 0 } ?: return
+        val typeRaw = argStr("type")?.uppercase() ?: ""
+        val isIncome = typeRaw == "INCOME" || typeRaw.contains("收入")
+
+        lastToolCall = ParsedExpense(
+            amount      = amount,
+            type        = if (isIncome) ExpenseType.INCOME else ExpenseType.EXPENSE,
+            category    = ExpenseCategory.fromString(argStr("category") ?: ""),
+            description = argStr("description")?.ifBlank { null } ?: argStr("category") ?: "",
+            date        = parseDate(argStr("date") ?: "")
+        )
+        Log.d(TAG, "Tool call parsed: $lastToolCall")
+    }
+
+    // ── 工具定義 ──────────────────────────────────────────────────────────────
+
+    private fun buildExpenseTool(): Tool {
+        val fn = defineFunction(
+            name        = "record_expense",
+            description = "記錄一筆消費或收入到記帳系統。支出與收入均使用此工具，透過 type 欄位區分。",
+            parameters  = mapOf(
+                "amount"      to Schema.double("金額，正數"),
+                "type"        to Schema.str("EXPENSE（支出）或 INCOME（收入）"),
+                "category"    to Schema.str(
+                    "類別：FOOD/TRANSPORT/SHOPPING/ENTERTAINMENT/HEALTH/" +
+                    "EDUCATION/UTILITIES/HOUSING/SALARY/BONUS/INVESTMENT/OTHER"
+                ),
+                "description" to Schema.str("10 字以內的簡短說明"),
+                "date"        to Schema.str("交易日期，格式 yyyy-MM-dd")
+            ),
+            requiredParameters = listOf("amount", "type", "category", "description", "date")
+        )
+        return Tool(listOf(fn))
+    }
+
+    // ── 日期解析 ──────────────────────────────────────────────────────────────
+
+    private fun parseDate(raw: String): LocalDate {
+        val s = raw.trim()
+        val today = LocalDate.now()
+        val fullFmts = listOf(
+            DateTimeFormatter.ISO_LOCAL_DATE,
+            DateTimeFormatter.ofPattern("yyyy/MM/dd"),
+            DateTimeFormatter.ofPattern("yyyy年MM月dd日"),
+            DateTimeFormatter.ofPattern("yyyy年M月d日"),
+        )
+        for (fmt in fullFmts) {
+            try { return LocalDate.parse(s, fmt) } catch (_: DateTimeParseException) {}
+        }
+        return today
+    }
+}

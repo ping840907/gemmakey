@@ -71,12 +71,14 @@ class ExpenseToolSet : ToolSet {
     fun parseFromToolCallText(response: String): ParsedExpense? {
         val normalized = response.replace(Regex("""<\|["']\|>"""), "\"")
 
+        // Match both record_expense and record_income (model sometimes uses wrong name for income)
         val match = Regex(
-            """call\s*:\s*record_expense\s*\{([^}]+)\}""",
+            """call\s*:\s*record_(expense|income)\s*\{([^}]+)\}""",
             setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
         ).find(normalized) ?: return null
 
-        val args = match.groupValues[1]
+        val calledIncome = match.groupValues[1].equals("income", ignoreCase = true)
+        val args = match.groupValues[2]
 
         fun str(key: String): String? =
             Regex(""""?$key"?\s*:\s*"?([^",}\n]+)"?""", RegexOption.IGNORE_CASE)
@@ -84,10 +86,15 @@ class ExpenseToolSet : ToolSet {
 
         val amount = str("amount")?.toDoubleOrNull()?.takeIf { it > 0 } ?: return null
 
+        val typeRaw = str("type")?.uppercase() ?: ""
+        val isIncome = calledIncome ||
+                       typeRaw == "INCOME" ||
+                       typeRaw.contains("收入") ||
+                       typeRaw.contains("REVENUE")
+
         lastCall = ParsedExpense(
             amount      = amount,
-            type        = if (str("type")?.uppercase() == "INCOME") ExpenseType.INCOME
-                          else ExpenseType.EXPENSE,
+            type        = if (isIncome) ExpenseType.INCOME else ExpenseType.EXPENSE,
             category    = ExpenseCategory.fromString(str("category") ?: ""),
             description = str("description")?.ifBlank { null } ?: str("category") ?: "",
             date        = parseDate(str("date") ?: "")

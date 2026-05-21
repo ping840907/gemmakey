@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
@@ -9,15 +10,6 @@
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
-
-    <!-- Allow LiteRT native runtime to load vendor OpenCL/NPU drivers.
-         Without these, Android API 29+ linker namespace restrictions prevent
-         access to libvndksupport.so and libOpenCL.so, causing GPU to fall back
-         to an unimplemented OpenGL stub (CreateSharedMemoryManager error). -->
-    <uses-native-library android:name="libvndksupport.so"       android:required="false" />
-    <uses-native-library android:name="libOpenCL.so"            android:required="false" />
-    <uses-native-library android:name="libcdsprpc.so"           android:required="false" />
-    <uses-native-library android:name="libedgetpu_litert.so"    android:required="false" />
 
     <application
         android:name=".GemmaKeyApplication"
@@ -41,6 +33,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Allow LiteRT to load vendor OpenCL/NPU drivers (Android API 29+ linker restriction) -->
+        <uses-native-library android:name="libvndksupport.so"    android:required="false" />
+        <uses-native-library android:name="libOpenCL.so"         android:required="false" />
+        <uses-native-library android:name="libcdsprpc.so"        android:required="false" />
+        <uses-native-library android:name="libedgetpu_litert.so" android:required="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

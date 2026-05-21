@@ -31,6 +31,10 @@ class PromptBuilder @Inject constructor() {
 
 【記帳規則】
 當用戶在「用戶新訊息」中描述新的消費或收入時，呼叫 record_expense 工具記錄。
+無論是支出還是收入，一律使用 record_expense 工具，透過 type 欄位區分：
+- 支出：type = "EXPENSE"
+- 收入：type = "INCOME"（薪水、紅包、獎金等均為收入）
+
 date 欄位規則：
 - 若用戶明確提及日期（如「昨天」「上週五」「3月15日」），請換算為 yyyy-MM-dd 格式填入。
 - 若未提及日期，填入今天：$todayStr。

@@ -3,7 +3,10 @@ package com.gemmakey.viewmodel
 import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.gemmakey.ai.AppSettings
+import com.gemmakey.ai.BackendType
 import com.gemmakey.ai.ExpenseToolSet
+import com.gemmakey.ai.GeminiChatManager
 import com.gemmakey.ai.GemmaInferenceManager
 import com.gemmakey.ai.InferenceState
 import com.gemmakey.ai.PromptBuilder
@@ -34,6 +37,7 @@ data class ChatUiState(
     val messages: List<ChatMessage> = listOf(WELCOME_MESSAGE),
     val isGenerating: Boolean = false,
     val inferenceState: InferenceState = InferenceState(),
+    val backendType: BackendType = BackendType.GEMMA_LOCAL,
     val pendingExpense: ParsedExpense? = null,
     val pendingRawInput: String = ""
 )
@@ -41,41 +45,67 @@ data class ChatUiState(
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val gemma: GemmaInferenceManager,
+    private val gemini: GeminiChatManager,
     private val promptBuilder: PromptBuilder,
     private val ragManager: RAGManager,
-    private val repository: ExpenseRepository
+    private val repository: ExpenseRepository,
+    private val appSettings: AppSettings
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
-    // 每次對話的工具集，持有最新 function call 結果
     private val toolSet = ExpenseToolSet()
-    // 帶工具的持久 Conversation（跨多輪使用，節省 KV cache 重建成本）
     private var conversation: Conversation? = null
 
     init {
         viewModelScope.launch { initModel() }
     }
 
-    // ── Model 初始化 ──────────────────────────────────────────────────────────
+    // ── 初始化 ────────────────────────────────────────────────────────────────
 
     private suspend fun initModel() {
-        _uiState.update { it.copy(inferenceState = InferenceState(isLoading = true)) }
-        val state = gemma.initialize()
-        _uiState.update { it.copy(inferenceState = state) }
+        val backend = appSettings.backendType
+        _uiState.update { it.copy(
+            inferenceState = InferenceState(isLoading = true),
+            backendType = backend
+        ) }
 
-        if (state.isReady) {
-            conversation = withContext(Dispatchers.IO) { createNewConversation() }
+        val state = when (backend) {
+            BackendType.GEMMA_LOCAL -> {
+                val s = gemma.initialize()
+                if (s.isReady) {
+                    conversation = withContext(Dispatchers.IO) { createNewConversation() }
+                }
+                s
+            }
+            BackendType.GEMINI_API -> gemini.initialize(
+                apiKey    = appSettings.geminiApiKey,
+                modelName = appSettings.geminiModelName
+            )
         }
+
+        _uiState.update { it.copy(inferenceState = state, backendType = backend) }
         if (state.error != null) appendAssistantMessage("⚠️ ${state.error}")
     }
 
-    // ── 對話建立（可重用於 init 和 clear）────────────────────────────────────────
+    fun reinitialize() {
+        if (_uiState.value.isGenerating) return
+        viewModelScope.launch {
+            conversation?.close()
+            conversation = null
+            gemini.close()
+            toolSet.clearLastCall()
+            _uiState.update {
+                it.copy(messages = listOf(WELCOME_MESSAGE), pendingExpense = null, pendingRawInput = "")
+            }
+            initModel()
+        }
+    }
+
+    // ── Gemma conversation helpers ────────────────────────────────────────────
 
     private suspend fun createNewConversation(): Conversation? =
-        // ToolSet 在 LiteRT-LM 0.11.0 與 ToolProvider 是不同型別；KSP 可能在執行期
-        // 產生橋接實作，因此透過 Any 轉型並在失敗時 fallback 到空工具清單。
         runCatching {
             @Suppress("UNCHECKED_CAST")
             val toolProviders = listOf(toolSet as Any as ToolProvider)
@@ -89,14 +119,20 @@ class ChatViewModel @Inject constructor(
     fun clearConversation() {
         if (_uiState.value.isGenerating) return
         toolSet.clearLastCall()
+        gemini.clearToolCall()
         _uiState.update {
             it.copy(messages = listOf(WELCOME_MESSAGE), pendingExpense = null, pendingRawInput = "")
         }
         viewModelScope.launch {
-            conversation?.close()
-            conversation = null
-            if (gemma.state.isReady) {
-                conversation = withContext(Dispatchers.IO) { createNewConversation() }
+            when (appSettings.backendType) {
+                BackendType.GEMMA_LOCAL -> {
+                    conversation?.close()
+                    conversation = null
+                    if (gemma.state.isReady) {
+                        conversation = withContext(Dispatchers.IO) { createNewConversation() }
+                    }
+                }
+                BackendType.GEMINI_API -> gemini.startNewSession()
             }
         }
     }
@@ -119,7 +155,7 @@ class ChatViewModel @Inject constructor(
         appendUserMessage(text = userHint.ifBlank { "📷 分析圖片記帳…" }, bitmap = bitmap)
         processInput(
             userText = promptBuilder.buildImageInstruction(userHint),
-            bitmap = bitmap,
+            bitmap   = bitmap,
             rawInput = userHint.ifBlank { "圖片輸入" }
         )
     }
@@ -135,43 +171,71 @@ class ChatViewModel @Inject constructor(
             try {
                 val ragContext = ragManager.buildContext(userText)
                 val messageText = promptBuilder.buildUserMessage(userText, ragContext)
-                toolSet.clearLastCall()
 
-                val responseBuilder = StringBuilder()
-                val conv = conversation
-
-                val stream = if (bitmap != null)
-                    gemma.generateStreamWithImage(messageText, bitmap, conv)
-                else
-                    gemma.generateStream(messageText, conv)
-
-                stream.collect { token ->
-                    responseBuilder.append(token)
-                    updateLoadingMessage(loadingId, responseBuilder.toString())
+                when (appSettings.backendType) {
+                    BackendType.GEMMA_LOCAL -> processWithGemma(messageText, bitmap, loadingId, rawInput)
+                    BackendType.GEMINI_API  -> processWithGemini(messageText, bitmap, loadingId, rawInput)
                 }
-
-                // 推論完成後，先嘗試 LiteRT-LM 原生 tool calling；
-                // 若未觸發（ToolSet/ToolProvider 型別不符時的 fallback），改以文字解析
-                if (toolSet.lastCall == null) {
-                    toolSet.parseFromToolCallText(responseBuilder.toString())
-                }
-                val toolCallResult = toolSet.lastCall
-                if (toolCallResult != null) {
-                    val previewText = buildPreviewText(toolCallResult)
-                    finaliseMessage(loadingId, previewText)
-                    _uiState.update {
-                        it.copy(pendingExpense = toolCallResult, pendingRawInput = rawInput)
-                    }
-                    toolSet.clearLastCall()
-                } else {
-                    finaliseMessage(loadingId, responseBuilder.toString().trim().ifBlank { "（無回應）" })
-                }
-
             } catch (e: Exception) {
                 finaliseMessage(loadingId, "❌ 發生錯誤：${e.message}")
             } finally {
                 _uiState.update { it.copy(isGenerating = false) }
             }
+        }
+    }
+
+    private suspend fun processWithGemma(
+        messageText: String,
+        bitmap: Bitmap?,
+        loadingId: Long,
+        rawInput: String
+    ) {
+        toolSet.clearLastCall()
+        val responseBuilder = StringBuilder()
+        val stream = if (bitmap != null)
+            gemma.generateStreamWithImage(messageText, bitmap, conversation)
+        else
+            gemma.generateStream(messageText, conversation)
+
+        stream.collect { token ->
+            responseBuilder.append(token)
+            updateLoadingMessage(loadingId, responseBuilder.toString())
+        }
+
+        if (toolSet.lastCall == null) {
+            toolSet.parseFromToolCallText(responseBuilder.toString())
+        }
+        val toolResult = toolSet.lastCall
+        if (toolResult != null) {
+            finaliseMessage(loadingId, buildPreviewText(toolResult))
+            _uiState.update { it.copy(pendingExpense = toolResult, pendingRawInput = rawInput) }
+            toolSet.clearLastCall()
+        } else {
+            finaliseMessage(loadingId, responseBuilder.toString().trim().ifBlank { "（無回應）" })
+        }
+    }
+
+    private suspend fun processWithGemini(
+        messageText: String,
+        bitmap: Bitmap?,
+        loadingId: Long,
+        rawInput: String
+    ) {
+        gemini.clearToolCall()
+        val responseBuilder = StringBuilder()
+
+        gemini.generateStream(messageText, bitmap).collect { chunk ->
+            responseBuilder.append(chunk)
+            updateLoadingMessage(loadingId, responseBuilder.toString())
+        }
+
+        val toolResult = gemini.lastToolCall
+        if (toolResult != null) {
+            finaliseMessage(loadingId, buildPreviewText(toolResult))
+            _uiState.update { it.copy(pendingExpense = toolResult, pendingRawInput = rawInput) }
+            gemini.clearToolCall()
+        } else {
+            finaliseMessage(loadingId, responseBuilder.toString().trim().ifBlank { "（無回應）" })
         }
     }
 
@@ -188,14 +252,26 @@ class ChatViewModel @Inject constructor(
             val savedId = repository.save(entry)
             _uiState.update { it.copy(pendingExpense = null, pendingRawInput = "") }
 
-            // 讓模型輸出確認訊息（不影響主 conversation 的 KV cache）
             val confirmMsg = withContext(Dispatchers.IO) {
-                runCatching {
-                    gemma.generate(
-                        "工具執行成功：已儲存「${entry.category.displayName} NT\$${entry.amount.toLong()}」(id=$savedId)。請用一句話確認。",
-                        conversation
-                    )
-                }.getOrDefault("✅ 已儲存：${entry.category.emoji} ${entry.description} NT\$${entry.amount.toLong()}")
+                when (appSettings.backendType) {
+                    BackendType.GEMMA_LOCAL -> runCatching {
+                        gemma.generate(
+                            "工具執行成功：已儲存「${entry.category.displayName} NT\$${entry.amount.toLong()}」(id=$savedId)。請用一句話確認。",
+                            conversation
+                        )
+                    }.getOrDefault("✅ 已儲存：${entry.category.emoji} ${entry.description} NT\$${entry.amount.toLong()}")
+
+                    BackendType.GEMINI_API -> {
+                        val text = gemini.sendFunctionResponse(
+                            "record_expense",
+                            mapOf(
+                                "status"  to "success",
+                                "message" to "已儲存「${entry.category.displayName} NT\$${entry.amount.toLong()}」(id=$savedId)"
+                            )
+                        )
+                        text.ifBlank { "✅ 已儲存：${entry.category.emoji} ${entry.description} NT\$${entry.amount.toLong()}" }
+                    }
+                }
             }
             appendAssistantMessage(confirmMsg)
         }
@@ -203,6 +279,18 @@ class ChatViewModel @Inject constructor(
 
     fun dismissConfirmation() {
         _uiState.update { it.copy(pendingExpense = null, pendingRawInput = "") }
+        if (appSettings.backendType == BackendType.GEMINI_API) {
+            viewModelScope.launch {
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        gemini.sendFunctionResponse(
+                            "record_expense",
+                            mapOf("status" to "cancelled", "message" to "用戶取消了記帳")
+                        )
+                    }
+                }
+            }
+        }
         appendAssistantMessage("已取消，如需重新記帳請再說一次。")
     }
 
@@ -252,5 +340,6 @@ class ChatViewModel @Inject constructor(
         super.onCleared()
         conversation?.close()
         gemma.close()
+        gemini.close()
     }
 }

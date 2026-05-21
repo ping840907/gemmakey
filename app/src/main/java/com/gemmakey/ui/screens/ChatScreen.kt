@@ -1,21 +1,19 @@
 package com.gemmakey.ui.screens
 
-import android.net.Uri
 import androidx.compose.animation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.lazy.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteSweep
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.gemmakey.ai.BackendType
 import com.gemmakey.ai.InferenceBackend
 import com.gemmakey.ui.components.ConfirmationDialog
 import com.gemmakey.ui.components.InputBar
@@ -38,7 +36,7 @@ fun ChatScreen(viewModel: ChatViewModel = hiltViewModel()) {
 
     uiState.pendingExpense?.let { parsed ->
         ConfirmationDialog(
-            parsed = parsed,
+            parsed   = parsed,
             rawInput = uiState.pendingRawInput,
             onConfirm = viewModel::confirmSave,
             onDismiss = viewModel::dismissConfirmation
@@ -65,9 +63,14 @@ fun ChatScreen(viewModel: ChatViewModel = hiltViewModel()) {
             )
         )
 
-        // ── 模型狀態列 ───────────────────────────────────────────────────────
-        InferenceStatusBar(uiState.inferenceState.isReady, uiState.inferenceState.backend,
-            uiState.inferenceState.isLoading, uiState.inferenceState.error)
+        // ── 後端狀態列 ───────────────────────────────────────────────────────
+        InferenceStatusBar(
+            backendType = uiState.backendType,
+            isReady     = uiState.inferenceState.isReady,
+            hwBackend   = uiState.inferenceState.backend,
+            isLoading   = uiState.inferenceState.isLoading,
+            error       = uiState.inferenceState.error
+        )
 
         // Message list
         LazyColumn(
@@ -84,8 +87,8 @@ fun ChatScreen(viewModel: ChatViewModel = hiltViewModel()) {
 
         // Input bar
         InputBar(
-            isGenerating = uiState.isGenerating,
-            onSendText = viewModel::sendTextMessage,
+            isGenerating  = uiState.isGenerating,
+            onSendText    = viewModel::sendTextMessage,
             onVoiceResult = viewModel::sendVoiceResult,
             onImageSelected = { uri ->
                 val bitmap = ImageUtils.uriToBitmap(context, uri)
@@ -97,22 +100,28 @@ fun ChatScreen(viewModel: ChatViewModel = hiltViewModel()) {
 
 @Composable
 private fun InferenceStatusBar(
+    backendType: BackendType,
     isReady: Boolean,
-    backend: InferenceBackend,
+    hwBackend: InferenceBackend,
     isLoading: Boolean,
     error: String?
 ) {
     AnimatedVisibility(visible = isLoading || error != null || isReady) {
         val (color, text) = when {
-            isLoading -> MaterialTheme.colorScheme.secondaryContainer to "正在載入 Gemma 4 模型…"
+            isLoading -> MaterialTheme.colorScheme.secondaryContainer to when (backendType) {
+                BackendType.GEMINI_API  -> "正在連線 Gemini API…"
+                BackendType.GEMMA_LOCAL -> "正在載入 Gemma 4 模型…"
+            }
             error != null -> MaterialTheme.colorScheme.errorContainer to "⚠️ $error"
+            backendType == BackendType.GEMINI_API ->
+                MaterialTheme.colorScheme.tertiaryContainer to "✦ Gemini API 就緒"
             else -> {
-                val backendLabel = when (backend) {
-                    InferenceBackend.NPU -> "NPU 加速 ⚡"   // Qualcomm QNN / MediaTek NeuroPilot
+                val label = when (hwBackend) {
+                    InferenceBackend.NPU -> "NPU 加速 ⚡"
                     InferenceBackend.GPU -> "GPU 加速"
                     InferenceBackend.CPU -> "CPU 運算"
                 }
-                MaterialTheme.colorScheme.primaryContainer to "✓ Gemma 4 就緒 · $backendLabel"
+                MaterialTheme.colorScheme.primaryContainer to "✓ Gemma 4 就緒 · $label"
             }
         }
         Row(
@@ -127,7 +136,7 @@ private fun InferenceStatusBar(
                 Spacer(Modifier.width(8.dp))
             }
             Text(
-                text = text,
+                text  = text,
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSecondaryContainer
             )

@@ -4,6 +4,7 @@
     <string name="tab_chat">記帳</string>
     <string name="tab_history">明細</string>
     <string name="tab_stats">統計</string>
+    <string name="tab_settings">設定</string>
     <string name="hint_message">輸入消費、收入或詢問記帳...</string>
     <string name="btn_send">傳送</string>
     <string name="btn_voice">語音</string>

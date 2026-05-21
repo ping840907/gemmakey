@@ -13,11 +13,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.compose.*
 import com.gemmakey.ui.screens.ChatScreen
 import com.gemmakey.ui.screens.HistoryScreen
+import com.gemmakey.ui.screens.SettingsScreen
 import com.gemmakey.ui.screens.StatisticsScreen
 import com.gemmakey.ui.theme.GemmaKeyTheme
+import com.gemmakey.viewmodel.ChatViewModel
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
@@ -51,9 +54,13 @@ private sealed class NavDestination(
         "stats", R.string.tab_stats,
         Icons.Default.BarChart, Icons.Default.BarChart
     )
+    data object Settings : NavDestination(
+        "settings", R.string.tab_settings,
+        Icons.Default.SettingsApplications, Icons.Default.Settings
+    )
 
     companion object {
-        val all = listOf(Chat, History, Statistics)
+        val all = listOf(Chat, History, Statistics, Settings)
     }
 }
 
@@ -62,6 +69,9 @@ private fun GemmaKeyApp() {
     val navController = rememberNavController()
     val backstackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backstackEntry?.destination?.route
+
+    // Shared ChatViewModel so Settings can trigger reinitialize()
+    val chatViewModel: ChatViewModel = hiltViewModel()
 
     Scaffold(
         bottomBar = {
@@ -90,16 +100,27 @@ private fun GemmaKeyApp() {
         }
     ) { innerPadding ->
         NavHost(
-            navController = navController,
+            navController    = navController,
             startDestination = NavDestination.Chat.route,
-            modifier = Modifier
+            modifier         = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .consumeWindowInsets(innerPadding)  // prevent imePadding() double-counting nav bar
+                .consumeWindowInsets(innerPadding)
         ) {
-            composable(NavDestination.Chat.route)       { ChatScreen() }
+            composable(NavDestination.Chat.route)       { ChatScreen(chatViewModel) }
             composable(NavDestination.History.route)    { HistoryScreen() }
             composable(NavDestination.Statistics.route) { StatisticsScreen() }
+            composable(NavDestination.Settings.route) {
+                SettingsScreen(
+                    onSaved = {
+                        // Reinitialize backend then navigate back to chat
+                        chatViewModel.reinitialize()
+                        navController.navigate(NavDestination.Chat.route) {
+                            popUpTo(NavDestination.Chat.route) { inclusive = true }
+                        }
+                    }
+                )
+            }
         }
     }
 }

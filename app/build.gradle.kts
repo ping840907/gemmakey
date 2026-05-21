@@ -87,6 +87,9 @@ dependencies {
     // LiteRT-LM: Gemma 4 on-device inference (NPU / GPU / CPU)
     implementation(libs.litertlm.android)
 
+    // Gemini API: cloud inference via Google AI
+    implementation(libs.generativeai)
+
     // Hilt (KSP — no kapt needed since Hilt 2.51+)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
