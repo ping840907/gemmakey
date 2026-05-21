@@ -92,9 +92,14 @@ class ChatViewModel @Inject constructor(
     fun reinitialize() {
         if (_uiState.value.isGenerating) return
         viewModelScope.launch {
-            conversation?.close()
-            conversation = null
-            gemini.close()
+            // Fully tear down both backends before switching — prevents engine leaks
+            // when the user switches between GEMMA_LOCAL and GEMINI_API.
+            withContext(Dispatchers.IO) {
+                conversation?.close()
+                conversation = null
+                gemma.close()   // no-op if not initialized; must close to free ~2 GB RAM
+                gemini.close()  // no-op if not initialized
+            }
             toolSet.clearLastCall()
             _uiState.update {
                 it.copy(messages = listOf(WELCOME_MESSAGE), pendingExpense = null, pendingRawInput = "")

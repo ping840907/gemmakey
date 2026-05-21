@@ -56,6 +56,9 @@ class GemmaInferenceManager @Inject constructor(
     // ── 初始化 ─────────────────────────────────────────────────────────────
 
     suspend fun initialize(): InferenceState = withContext(Dispatchers.IO) {
+        // Close any existing engine before reinitializing to prevent resource leaks
+        engine?.close()
+        engine = null
         state = InferenceState(isLoading = true)
         Engine.setNativeMinLogSeverity(LogSeverity.ERROR)
 

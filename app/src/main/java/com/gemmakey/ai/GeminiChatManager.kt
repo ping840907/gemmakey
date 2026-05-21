@@ -67,7 +67,8 @@ class GeminiChatManager @Inject constructor(
                 )
             )
             startNewSession()
-            state = InferenceState(isReady = true, backend = InferenceBackend.GPU)
+            // backend field is Gemma-specific hardware; for Gemini we leave it as default CPU
+            state = InferenceState(isReady = true)
             Log.i(TAG, "Gemini initialized: $modelName")
             state
         } catch (e: Exception) {
@@ -100,23 +101,17 @@ class GeminiChatManager @Inject constructor(
             }
 
             val stream = c.sendMessageStream(inputContent)
-            val textBuffer = StringBuilder()
 
             stream.collect { response ->
-                // Collect text chunks
-                response.text?.let {
-                    textBuffer.append(it)
-                    trySend(it)
-                }
+                response.text?.let { trySend(it) }
 
-                // Check for function calls in this chunk
+                // Native function call detection (fires when model invokes record_expense)
                 response.candidates?.firstOrNull()?.content?.parts
                     ?.filterIsInstance<FunctionCallPart>()
                     ?.firstOrNull()
                     ?.let { parseFunctionCall(it) }
             }
 
-            // If a function call was detected, clear the text (we'll show preview instead)
             close()
         } catch (e: Exception) {
             Log.e(TAG, "Stream error", e)
