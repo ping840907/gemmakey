@@ -256,6 +256,9 @@ class GemmaInferenceManager @Inject constructor(
         return null
     }
 
+    /** Returns true if the model file is present in any expected location, without loading it. */
+    fun isModelInstalled(): Boolean = resolveModelPath() != null
+
     fun close() {
         engine?.close()
         engine = null

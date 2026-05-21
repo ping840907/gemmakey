@@ -3,6 +3,7 @@ package com.gemmakey.viewmodel
 import androidx.lifecycle.ViewModel
 import com.gemmakey.ai.AppSettings
 import com.gemmakey.ai.BackendMode
+import com.gemmakey.ai.GemmaInferenceManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -14,6 +15,7 @@ data class SettingsUiState(
     val backendMode: BackendMode = BackendMode.GEMMA_ONLY,
     val geminiApiKey: String = "",
     val geminiModelName: String = "gemini-2.0-flash",
+    val isGemmaInstalled: Boolean = false,
     val isSaved: Boolean = false
 )
 
@@ -27,14 +29,16 @@ val GEMINI_MODELS = listOf(
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-    private val appSettings: AppSettings
+    private val appSettings: AppSettings,
+    private val gemma: GemmaInferenceManager
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(
         SettingsUiState(
-            backendMode     = appSettings.backendMode,
-            geminiApiKey    = appSettings.geminiApiKey,
-            geminiModelName = appSettings.geminiModelName
+            backendMode      = appSettings.backendMode,
+            geminiApiKey     = appSettings.geminiApiKey,
+            geminiModelName  = appSettings.geminiModelName,
+            isGemmaInstalled = gemma.isModelInstalled()
         )
     )
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()

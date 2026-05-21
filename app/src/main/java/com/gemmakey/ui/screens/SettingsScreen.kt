@@ -74,9 +74,15 @@ fun SettingsScreen(
         Card {
             Column(Modifier.padding(8.dp)) {
                 MODE_OPTIONS.forEach { option ->
-                    // GEMINI_ONLY requires an API key to be usable
-                    val enabled = option.mode != BackendMode.GEMINI_ONLY ||
-                                  uiState.geminiApiKey.isNotBlank()
+                    val (enabled, unavailableHint) = when (option.mode) {
+                        BackendMode.GEMMA_ONLY  ->
+                            if (uiState.isGemmaInstalled) true to null
+                            else false to "需先下載 Gemma 模型（見 MODEL_SETUP.md）"
+                        BackendMode.GEMINI_ONLY ->
+                            if (uiState.geminiApiKey.isNotBlank()) true to null
+                            else false to "請先設定 API Key"
+                        BackendMode.SMART       -> true to null
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -92,7 +98,7 @@ fun SettingsScreen(
                         Column(Modifier.padding(start = 8.dp)) {
                             Text(option.title, style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                if (!enabled) "${option.subtitle}（請先設定 API Key）"
+                                if (unavailableHint != null) "${option.subtitle}（$unavailableHint）"
                                 else option.subtitle,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant

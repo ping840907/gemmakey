@@ -121,20 +121,36 @@ class ChatViewModel @Inject constructor(
             BackendType.GEMINI_API  -> initGemini()
         }
 
-        // Gemini failed on startup → fall back to Gemma so the app remains usable
+        // Primary backend failed on startup → try the other one so the app remains usable
         var fallbackMsg: String? = null
-        if (!state.isReady && target == BackendType.GEMINI_API) {
-            val gemmaState = initGemma()
-            if (gemmaState.isReady) {
-                activeTarget = BackendType.GEMMA_LOCAL
-                state = gemmaState
-                fallbackMsg = "⚠️ Gemini 無法使用，已自動切換至本機 Gemma"
+        if (!state.isReady) {
+            when (target) {
+                BackendType.GEMINI_API -> {
+                    // Gemini failed → fall back to Gemma
+                    val gemmaState = initGemma()
+                    if (gemmaState.isReady) {
+                        activeTarget = BackendType.GEMMA_LOCAL
+                        state = gemmaState
+                        fallbackMsg = "⚠️ Gemini 無法使用，已自動切換至本機 Gemma"
+                    }
+                }
+                BackendType.GEMMA_LOCAL -> {
+                    // Gemma failed (model not installed etc.) → fall back to Gemini if key is set
+                    if (appSettings.geminiApiKey.isNotBlank()) {
+                        val geminiState = initGemini()
+                        if (geminiState.isReady) {
+                            activeTarget = BackendType.GEMINI_API
+                            state = geminiState
+                            fallbackMsg = "⚠️ Gemma 模型未就緒，已自動切換至 Gemini API"
+                        }
+                    }
+                }
             }
         }
 
         _uiState.update { it.copy(inferenceState = state, backendType = activeTarget, backendMode = mode) }
         when {
-            fallbackMsg != null                  -> appendAssistantMessage(fallbackMsg)
+            fallbackMsg != null                   -> appendAssistantMessage(fallbackMsg)
             !state.isReady && state.error != null -> appendAssistantMessage("⚠️ ${state.error}")
         }
     }
