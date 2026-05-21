@@ -235,11 +235,11 @@ class ChatViewModel @Inject constructor(
         runCatching {
             @Suppress("UNCHECKED_CAST")
             gemma.createConversation(
-                systemInstruction = promptBuilder.systemInstruction,
+                systemInstruction = promptBuilder.buildGemmaSystemInstruction(),
                 tools = listOf(toolSet as Any as ToolProvider)
             )
         }.recoverCatching {
-            gemma.createConversation(systemInstruction = promptBuilder.systemInstruction)
+            gemma.createConversation(systemInstruction = promptBuilder.buildGemmaSystemInstruction())
         }.getOrNull()
 
     // ── Clear conversation ────────────────────────────────────────────────────

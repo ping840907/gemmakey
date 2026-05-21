@@ -52,7 +52,7 @@ class GeminiChatManager @Inject constructor(
         }
         return try {
             val expenseTool = buildExpenseTool()
-            val sysInstruction = content { text(promptBuilder.buildSystemInstruction()) }
+            val sysInstruction = content { text(promptBuilder.buildGeminiSystemInstruction()) }
 
             model = GenerativeModel(
                 modelName = modelName,
