@@ -2,9 +2,9 @@ package com.gemmakey.ai
 
 import com.gemmakey.data.database.CategoryTotal
 import com.gemmakey.data.repository.ExpenseRepository
-import com.gemmakey.model.ExpenseCategory
 import com.gemmakey.model.ExpenseEntry
 import java.time.LocalDate
+import java.time.YearMonth
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -15,16 +15,18 @@ class RAGManager @Inject constructor(
 ) {
     private enum class QueryIntent { RECORD, QUERY_SUMMARY, QUERY_DETAIL, GENERAL }
 
+    // Amount pattern: explicit number followed by currency unit
+    private val amountPattern = Regex("""\d+\s*[元塊圓]""")
+
     // ── Public API ────────────────────────────────────────────────────────────
 
     /**
-     * Returns a context string for the given user query, or empty string when
-     * no historical context is needed (recording, general chat).
+     * Returns a context string appropriate for the user's query intent, or empty
+     * when no historical data is needed (recording a new entry, general chat).
      *
-     * Intent routing:
-     *   RECORD        → ""  (no pollution of new-entry prompts)
-     *   QUERY_SUMMARY → aggregated totals (compact: ~5 lines)
-     *   QUERY_DETAIL  → targeted records matching date/keyword (no baseline dump)
+     *   RECORD        → ""                 (never inject old data into new-entry prompts)
+     *   QUERY_SUMMARY → aggregated totals  (period / income / expense / category breakdown)
+     *   QUERY_DETAIL  → targeted records   (date range + FTS match, no baseline dump)
      *   GENERAL       → ""
      */
     suspend fun buildContext(userQuery: String): String = when (classifyIntent(userQuery)) {
@@ -36,48 +38,74 @@ class RAGManager @Inject constructor(
     // ── Intent classification ─────────────────────────────────────────────────
 
     private fun classifyIntent(query: String): QueryIntent {
-        // Summary query: user wants aggregated amounts
+        val hasAmount = amountPattern.containsMatchIn(query)
+
+        // ── If a concrete amount is present, it's almost always a recording ──
+        // Exception: explicit query words like "多少" override (e.g. "這週花了多少元？")
+        val explicitQueryWords = listOf("多少", "幾元", "幾塊", "合計", "總計", "統計", "總共", "共花")
+        val hasExplicitQuery = explicitQueryWords.any { query.contains(it) }
+        if (hasAmount && !hasExplicitQuery) return QueryIntent.RECORD
+
+        // ── Summary / analytics intent ────────────────────────────────────────
+        // These words appear in "asking about spending" sentences, not recording ones.
+        // RECORD is already ruled out above if amount is present.
         val summaryWords = listOf(
-            "多少", "幾元", "幾塊", "合計", "總計", "統計", "共花", "花了多少",
-            "總共", "收支", "結餘", "花費多", "消費多", "支出多"
+            // Quantity queries
+            "多少", "幾元", "幾塊", "合計", "總計", "統計", "共花", "總共", "收支", "結餘",
+            // Analytics / situation
+            "花費", "消費", "支出", "趨勢", "分析", "狀況", "情形", "概況", "費用",
+            // Income queries
+            "收入", "薪水收了多"
         )
         if (summaryWords.any { query.contains(it) }) return QueryIntent.QUERY_SUMMARY
 
-        // Detail query: user wants to see specific records
+        // ── Detail / record-lookup intent ─────────────────────────────────────
         val detailWords = listOf(
             "哪些", "列出", "明細", "查看", "有沒有", "什麼時候", "哪天",
-            "幾筆", "記錄了", "查詢", "看看", "顯示"
+            "幾筆", "記錄了", "查詢", "看看", "顯示", "找", "有哪"
         )
         if (detailWords.any { query.contains(it) }) return QueryIntent.QUERY_DETAIL
 
-        // Time reference without an amount → detail query
-        val timeWords = listOf("今天", "昨天", "本週", "這週", "上週", "本月", "這個月", "上個月", "最近", "近期")
-        val hasTimeRef = timeWords.any { query.contains(it) }
-        val hasAmount  = Regex("""\d+\s*[元塊圓]""").containsMatchIn(query)
-
-        if (hasTimeRef && !hasAmount) return QueryIntent.QUERY_DETAIL
-
-        // Amount + expense/income verb → recording a new entry
-        val expenseVerbs = listOf("花了", "買了", "付了", "消費", "花費", "吃了", "喝了", "搭了", "租了", "繳了")
-        val incomeVerbs  = listOf("收到", "收入", "薪水", "發薪", "獎金", "賺了", "領了")
-        val hasExpenseVerb = (expenseVerbs + incomeVerbs).any { query.contains(it) }
-
-        if (hasAmount && hasExpenseVerb) return QueryIntent.RECORD
-        if (hasAmount) return QueryIntent.RECORD   // amount alone is likely recording
+        // Time reference without amount → assume detail lookup
+        val timeWords = listOf(
+            "今天", "昨天", "本週", "這週", "上週", "本月", "這個月",
+            "上個月", "最近", "近期", "今年", "去年"
+        )
+        if (timeWords.any { query.contains(it) }) return QueryIntent.QUERY_DETAIL
 
         return QueryIntent.GENERAL
     }
 
-    // ── Summary context (aggregated totals) ──────────────────────────────────
+    // ── Summary context (aggregated totals) ───────────────────────────────────
 
     private suspend fun buildSummaryContext(query: String): String {
         val now = LocalDate.now()
+        // Trend / multi-month: show last 3 months when "趨勢" or "幾個月" is mentioned
+        if (query.contains("趨勢") || query.contains("幾個月") || query.contains("近幾個月")) {
+            return buildTrendContext(3)
+        }
+
         val (start, end) = extractDateRange(query) ?: (now.withDayOfMonth(1) to now)
 
         val (totalExpense, totalIncome) = repository.getTotals(start, end)
         val categoryTotals = repository.getCategoryTotals(start, end)
-
         return promptBuilder.formatSummaryContext(start, end, totalExpense, totalIncome, categoryTotals)
+    }
+
+    /** Returns month-by-month summary for the last [months] months. */
+    private suspend fun buildTrendContext(months: Int): String {
+        val now = YearMonth.now()
+        val sb = StringBuilder()
+        repeat(months) { offset ->
+            val ym = now.minusMonths(offset.toLong())
+            val start = ym.atDay(1)
+            val end   = if (offset == 0) LocalDate.now() else ym.atEndOfMonth()
+            val (exp, inc) = repository.getTotals(start, end)
+            val catTotals  = repository.getCategoryTotals(start, end)
+            sb.append(promptBuilder.formatSummaryContext(start, end, exp, inc, catTotals))
+            sb.append("\n---\n")
+        }
+        return sb.toString().trimEnd('-', '\n', ' ')
     }
 
     // ── Detail context (targeted record retrieval) ────────────────────────────
@@ -99,7 +127,7 @@ class RAGManager @Inject constructor(
                 ?.forEach { e -> if (seen.add(e.id)) combined.add(e) }
         }
 
-        // No baseline "recent N records" — only inject what actually matches
+        // No baseline "recent N records" — only what actually matches
         val entries = combined.sortedByDescending { it.date }.take(25)
         return promptBuilder.formatRAGContext(entries)
     }
@@ -108,7 +136,6 @@ class RAGManager @Inject constructor(
 
     private fun extractKeywords(query: String): List<String> {
         val result = mutableListOf<String>()
-
         val categoryMap = mapOf(
             "餐" to "FOOD", "食" to "FOOD", "吃" to "FOOD", "飲" to "FOOD",
             "咖啡" to "FOOD", "早餐" to "FOOD", "午餐" to "FOOD", "晚餐" to "FOOD",
@@ -122,16 +149,12 @@ class RAGManager @Inject constructor(
             "房" to "HOUSING", "租" to "HOUSING",
             "薪" to "SALARY", "薪水" to "SALARY",
         )
-
         categoryMap.forEach { (keyword, category) ->
             if (query.contains(keyword)) result.add(category)
         }
-
-        // Raw Chinese segments as FTS terms
         query.split(Regex("[\\s,，。？?！!、]+"))
             .filter { it.length in 2..8 }
             .let { result.addAll(it) }
-
         return result.distinct()
     }
 
@@ -139,6 +162,8 @@ class RAGManager @Inject constructor(
 
     private fun extractDateRange(query: String): Pair<LocalDate, LocalDate>? {
         val now = LocalDate.now()
+        // Specific month mention: N月 (e.g. "5月", "三月")
+        val monthNum = Regex("""(\d{1,2})月""").find(query)?.groupValues?.get(1)?.toIntOrNull()
         return when {
             query.contains("今天") || query.contains("今日") ->
                 now to now
@@ -154,8 +179,19 @@ class RAGManager @Inject constructor(
             query.contains("上個月") || query.contains("上月") ->
                 now.minusMonths(1).withDayOfMonth(1) to
                 now.minusMonths(1).withDayOfMonth(now.minusMonths(1).lengthOfMonth())
+            query.contains("今年") ->
+                now.withDayOfYear(1) to now
+            query.contains("去年") ->
+                now.minusYears(1).withDayOfYear(1) to
+                now.minusYears(1).withDayOfYear(now.minusYears(1).lengthOfYear())
             query.contains("最近") || query.contains("近期") ->
                 now.minusDays(30) to now
+            monthNum != null && monthNum in 1..12 -> {
+                // Specific month in current year (e.g. "5月花了多少")
+                val targetYear = if (monthNum > now.monthValue) now.year - 1 else now.year
+                val ym = YearMonth.of(targetYear, monthNum)
+                ym.atDay(1) to ym.atEndOfMonth()
+            }
             else -> null
         }
     }
