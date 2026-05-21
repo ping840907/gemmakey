@@ -186,8 +186,13 @@ class GemmaInferenceManager @Inject constructor(
     }
 
     // ── 多模態推論（圖片 + 文字）──────────────────────────────────────────────
-    // gemma-4-E2B-it 為純文字模型（visionBackend=null），圖片內容會被忽略。
-    // 若改用具備視覺能力的模型，需在 buildEngine 傳入 visionBackend。
+    //
+    // Gemma 4 E2B/E4B 及 Gemma 3n 均支援視覺輸入（visionBackend 已設）。
+    // LiteRT-LM 0.11.0 Kotlin API 已知 bug (Issue #1874)：Gemma 4 需要 prompt
+    // template 中包含 image placeholder，但 ConversationConfig 未暴露此 C++ 介面。
+    // 若遇到 "INVALID_ARGUMENT: Provided more images than expected"，表示該模型
+    // 受此 bug 影響；錯誤由 onError callback 上報，不會造成 native crash。
+    // Gemma 3n 不受影響，可正常使用多模態推論。
 
     fun generateStreamWithImage(
         prompt: String,
@@ -197,22 +202,33 @@ class GemmaInferenceManager @Inject constructor(
         val conv = conversation ?: runCatching { createConversation() }.getOrNull()
             ?: run { trySend("[模型未初始化]"); close(); return@callbackFlow }
 
-        val imageContent = Content.ImageBytes(bitmap.toPngByteArray())
-        val contents = Contents.of(listOf(imageContent, Content.Text(prompt)))
+        try {
+            // LiteRT-LM 規範：圖片 content 必須排在文字 content 之前
+            val imageContent = Content.ImageBytes(bitmap.toPngByteArray())
+            val contents = Contents.of(listOf(imageContent, Content.Text(prompt)))
 
-        conv.sendMessageAsync(
-            contents,
-            object : MessageCallback {
-                override fun onMessage(message: Message) { trySend(message.toString()) }
-                override fun onDone() { close() }
-                override fun onError(throwable: Throwable) {
-                    Log.e(TAG, "Multimodal error", throwable)
-                    trySend("❌ 圖片推論錯誤：${throwable.message}")
-                    close(throwable)
-                }
-            },
-            emptyMap()
-        )
+            conv.sendMessageAsync(
+                contents,
+                object : MessageCallback {
+                    override fun onMessage(message: Message) { trySend(message.toString()) }
+                    override fun onDone() { close() }
+                    override fun onError(throwable: Throwable) {
+                        Log.e(TAG, "Multimodal error", throwable)
+                        val msg = if (throwable.message?.contains("more images than expected") == true)
+                            "⚠️ 此 Gemma 模型版本不支援圖片輸入（LiteRT-LM Issue #1874）。請使用 Gemma 3n 或切換至 Gemini API。"
+                        else
+                            "❌ 圖片推論錯誤：${throwable.message}"
+                        trySend(msg)
+                        close()
+                    }
+                },
+                emptyMap()
+            )
+        } catch (e: Throwable) {
+            Log.e(TAG, "generateStreamWithImage setup error", e)
+            trySend(if (e is OutOfMemoryError) "❌ 圖片過大，記憶體不足" else "❌ 圖片推論錯誤：${e.message}")
+            close()
+        }
         awaitClose()
     }
 

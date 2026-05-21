@@ -295,13 +295,6 @@ class ChatViewModel @Inject constructor(
 
     fun sendImageMessage(bitmap: Bitmap, userHint: String = "") {
         appendUserMessage(text = userHint.ifBlank { "📷 分析圖片記帳…" }, bitmap = bitmap)
-
-        // Gemma is a text-only model; passing image bytes causes a native abort in LiteRT-LM
-        if (_uiState.value.backendType == BackendType.GEMMA_LOCAL) {
-            appendAssistantMessage("⚠️ 本機 Gemma 模型不支援圖片辨識。\n請切換至 Gemini API，或直接用文字描述消費內容。")
-            return
-        }
-
         processInput(
             userText = promptBuilder.buildImageInstruction(userHint),
             bitmap   = bitmap,
@@ -401,8 +394,10 @@ class ChatViewModel @Inject constructor(
 
         toolSet.clearLastCall()
         val responseBuilder = StringBuilder()
-        // Gemma is text-only; never call generateStreamWithImage (native abort on image content)
-        val stream = gemma.generateStream(messageText, conversation)
+        val stream = if (bitmap != null)
+            gemma.generateStreamWithImage(messageText, bitmap, conversation)
+        else
+            gemma.generateStream(messageText, conversation)
 
         stream.collect { token ->
             responseBuilder.append(token)
