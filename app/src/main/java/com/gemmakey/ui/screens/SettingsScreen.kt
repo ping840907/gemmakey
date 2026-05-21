@@ -19,7 +19,6 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.gemmakey.ai.BackendMode
-import com.gemmakey.viewmodel.GEMINI_MODELS
 import com.gemmakey.viewmodel.SettingsViewModel
 
 private data class ModeOption(
@@ -136,17 +135,26 @@ fun SettingsScreen(
                 }
             )
 
-            // Model picker
+            // ── Model picker with live-fetch indicator ───────────────────────
             ExposedDropdownMenuBox(
                 expanded = modelMenuExpanded,
-                onExpandedChange = { modelMenuExpanded = it }
+                onExpandedChange = { if (!uiState.modelsLoading) modelMenuExpanded = it }
             ) {
                 OutlinedTextField(
                     value = uiState.geminiModelName,
                     onValueChange = {},
                     readOnly = true,
                     label = { Text("模型") },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(modelMenuExpanded) },
+                    trailingIcon = {
+                        if (uiState.modelsLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            ExposedDropdownMenuDefaults.TrailingIcon(modelMenuExpanded)
+                        }
+                    },
                     modifier = Modifier
                         .menuAnchor(MenuAnchorType.PrimaryNotEditable)
                         .fillMaxWidth()
@@ -155,7 +163,7 @@ fun SettingsScreen(
                     expanded = modelMenuExpanded,
                     onDismissRequest = { modelMenuExpanded = false }
                 ) {
-                    GEMINI_MODELS.forEach { name ->
+                    uiState.availableModels.forEach { name ->
                         DropdownMenuItem(
                             text = { Text(name) },
                             onClick = {

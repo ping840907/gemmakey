@@ -33,6 +33,7 @@ import javax.inject.Inject
 
 private const val MAX_HISTORY_TURNS    = 10  // max turns kept for cross-backend sharing
 private const val MAX_HISTORY_TO_GEMMA = 5   // turns injected as text prefix into Gemma
+private const val GEMMA_RECYCLE_TURNS  = 8   // recreate conversation after N turns to avoid KV-cache overflow
 
 private val WELCOME_MESSAGE = ChatMessage(
     role = MessageRole.ASSISTANT,
@@ -73,6 +74,9 @@ class ChatViewModel @Inject constructor(
 
     // History to inject into Gemma on the next message after a backend switch
     private var pendingHistoryForGemma: List<ConversationTurn> = emptyList()
+
+    // Counts LiteRT-LM Conversation turns; conversation is recycled at GEMMA_RECYCLE_TURNS
+    private var gemmaConversationTurns = 0
 
     init {
         viewModelScope.launch { initModel() }
@@ -157,7 +161,10 @@ class ChatViewModel @Inject constructor(
 
     private suspend fun initGemma(): InferenceState {
         val s = gemma.initialize()
-        if (s.isReady) conversation = withContext(Dispatchers.IO) { createNewConversation() }
+        if (s.isReady) {
+            conversation = withContext(Dispatchers.IO) { createNewConversation() }
+            gemmaConversationTurns = 0
+        }
         return s
     }
 
@@ -255,6 +262,7 @@ class ChatViewModel @Inject constructor(
         gemini.clearToolCall()
         conversationHistory.clear()
         pendingHistoryForGemma = emptyList()
+        gemmaConversationTurns = 0
         _uiState.update {
             it.copy(messages = listOf(WELCOME_MESSAGE), pendingExpense = null, pendingRawInput = "")
         }
@@ -373,6 +381,15 @@ class ChatViewModel @Inject constructor(
     private suspend fun processWithGemma(
         messageText: String, bitmap: Bitmap?, loadingId: Long, rawInput: String
     ): String? {
+        // Proactively recycle conversation before the KV-cache fills up
+        if (gemmaConversationTurns >= GEMMA_RECYCLE_TURNS) {
+            withContext(Dispatchers.IO) {
+                conversation?.close()
+                conversation = createNewConversation()
+            }
+            gemmaConversationTurns = 0
+        }
+
         toolSet.clearLastCall()
         val responseBuilder = StringBuilder()
         val stream = if (bitmap != null)
@@ -384,6 +401,8 @@ class ChatViewModel @Inject constructor(
             responseBuilder.append(token)
             updateLoadingMessage(loadingId, responseBuilder.toString())
         }
+
+        gemmaConversationTurns++
 
         if (toolSet.lastCall == null) toolSet.parseFromToolCallText(responseBuilder.toString())
 
@@ -443,7 +462,7 @@ class ChatViewModel @Inject constructor(
                         gemma.generate(
                             "工具執行成功：已儲存「${entry.category.displayName} NT\$${entry.amount.toLong()}」(id=$savedId)。請用一句話確認。",
                             conversation
-                        )
+                        ).also { gemmaConversationTurns++ }
                     }.getOrDefault("✅ 已儲存：${entry.category.emoji} ${entry.description} NT\$${entry.amount.toLong()}")
 
                     BackendType.GEMINI_API -> {

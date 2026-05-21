@@ -29,7 +29,7 @@ import javax.inject.Singleton
 
 private const val TAG            = "GemmaInference"
 private const val MODEL_FILENAME = "model.litertlm"
-private const val MAX_TOKENS     = 2048
+private const val MAX_TOKENS     = 8192
 private const val TOP_K          = 40
 private const val TOP_P          = 0.95
 private const val TEMPERATURE    = 0.7f
