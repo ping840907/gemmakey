@@ -73,6 +73,12 @@ class ChatViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
+    // Monotonically increasing message ID — prevents duplicate keys in LazyColumn when two
+    // ChatMessage objects are created within the same millisecond (System.currentTimeMillis()
+    // has only ~1ms precision; on some devices it returns the same value many times per ms).
+    private var nextMsgId = System.currentTimeMillis()
+    private fun nextId() = ++nextMsgId
+
     // Gemma per-session state
     private val toolSet = ExpenseToolSet()
     private var conversation: Conversation? = null
@@ -356,7 +362,7 @@ class ChatViewModel @Inject constructor(
 
         viewModelScope.launch {
             _uiState.update { it.copy(isGenerating = true) }
-            val loadingId = System.currentTimeMillis()
+            val loadingId = nextId()
             appendLoadingMessage(loadingId)
 
             try {
@@ -564,15 +570,17 @@ class ChatViewModel @Inject constructor(
     // ── Message list helpers ──────────────────────────────────────────────────
 
     private fun appendUserMessage(text: String, bitmap: Bitmap? = null) {
+        val id = nextId()
         _uiState.update { s ->
-            val next = s.messages + ChatMessage(role = MessageRole.USER, text = text, imageBitmap = bitmap)
+            val next = s.messages + ChatMessage(id = id, role = MessageRole.USER, text = text, imageBitmap = bitmap)
             s.copy(messages = next.capMessages())
         }
     }
 
     private fun appendAssistantMessage(text: String) {
+        val id = nextId()
         _uiState.update { s ->
-            val next = s.messages + ChatMessage(role = MessageRole.ASSISTANT, text = text)
+            val next = s.messages + ChatMessage(id = id, role = MessageRole.ASSISTANT, text = text)
             s.copy(messages = next.capMessages())
         }
     }

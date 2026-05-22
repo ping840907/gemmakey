@@ -7,6 +7,7 @@ import com.gemmakey.data.repository.ExpenseRepository
 import com.gemmakey.model.ExpenseEntry
 import com.gemmakey.model.ExpenseType
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,10 +35,13 @@ class HistoryViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(HistoryUiState())
     val uiState: StateFlow<HistoryUiState> = _uiState.asStateFlow()
 
+    private var monthJob: Job? = null
+
     init { loadMonth(YearMonth.now()) }
 
     fun loadMonth(month: YearMonth) {
-        viewModelScope.launch {
+        monthJob?.cancel()
+        monthJob = viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, currentMonth = month) }
             val start = month.atDay(1)
             val end = month.atEndOfMonth()
