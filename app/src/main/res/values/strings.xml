@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GemmaKey 記帳</string>
+    <string name="tab_chat">記帳</string>
+    <string name="tab_history">明細</string>
+    <string name="tab_stats">統計</string>
+    <string name="tab_settings">設定</string>
+    <string name="hint_message">輸入消費、收入或詢問記帳...</string>
+    <string name="btn_send">傳送</string>
+    <string name="btn_voice">語音</string>
+    <string name="btn_camera">相機</string>
+    <string name="btn_gallery">相簿</string>
+    <string name="dialog_confirm_title">確認記帳內容</string>
+    <string name="dialog_confirm_save">儲存</string>
+    <string name="dialog_confirm_cancel">取消</string>
+    <string name="label_amount">金額</string>
+    <string name="label_category">類別</string>
+    <string name="label_description">備註</string>
+    <string name="label_type_expense">支出</string>
+    <string name="label_type_income">收入</string>
+    <string name="model_loading">正在載入 Gemma 4 模型...</string>
+    <string name="model_ready">模型就緒，GPU 加速中</string>
+    <string name="model_not_found">找不到模型檔案，請將模型放入 assets/gemma4/ 資料夾</string>
+    <string name="listening">聆聽中...</string>
+    <string name="processing">AI 處理中...</string>
+    <string name="no_records">尚無記帳記錄</string>
+</resources>
