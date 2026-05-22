@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -159,19 +160,19 @@ class GemmaInferenceManager @Inject constructor(
             ?: run { trySend("[模型未初始化]"); close(); return@callbackFlow }
 
         val contents = Contents.of(listOf(Content.Text(prompt)))
-        @Volatile var active = true
+        val active = AtomicBoolean(true)
 
         conv.sendMessageAsync(
             contents,
             object : MessageCallback {
                 override fun onMessage(message: Message) {
-                    if (active) trySend(message.toString())
+                    if (active.get()) trySend(message.toString())
                 }
                 override fun onDone() {
-                    if (active) close()
+                    if (active.get()) close()
                 }
                 override fun onError(throwable: Throwable) {
-                    if (!active) return
+                    if (!active.get()) return
                     Log.e(TAG, "MessageCallback.onError", throwable)
                     trySend("❌ 推論錯誤：${throwable.message}")
                     close(throwable)
@@ -179,7 +180,7 @@ class GemmaInferenceManager @Inject constructor(
             },
             emptyMap()
         )
-        awaitClose { active = false }
+        awaitClose { active.set(false) }
     }
 
     // ── 多模態推論（圖片 + 文字）──────────────────────────────────────────────
@@ -210,7 +211,7 @@ class GemmaInferenceManager @Inject constructor(
             return@callbackFlow
         }
 
-        @Volatile var active = true
+        val active = AtomicBoolean(true)
 
         try {
             val imageContent = Content.ImageBytes(bitmap.toPngByteArray())
@@ -220,11 +221,11 @@ class GemmaInferenceManager @Inject constructor(
                 contents,
                 object : MessageCallback {
                     override fun onMessage(message: Message) {
-                        if (active) trySend(message.toString())
+                        if (active.get()) trySend(message.toString())
                     }
-                    override fun onDone() { if (active) close() }
+                    override fun onDone() { if (active.get()) close() }
                     override fun onError(throwable: Throwable) {
-                        if (!active) return
+                        if (!active.get()) return
                         Log.e(TAG, "Multimodal error", throwable)
                         val msg = if (throwable.message?.contains("more images than expected") == true)
                             "⚠️ 此 Gemma 模型版本不支援圖片輸入（LiteRT-LM Issue #1874）。請使用 Gemma 3n 或切換至 Gemini API。"
@@ -237,13 +238,13 @@ class GemmaInferenceManager @Inject constructor(
                 emptyMap()
             )
         } catch (e: Throwable) {
-            if (active) {
+            if (active.get()) {
                 Log.e(TAG, "generateStreamWithImage setup error", e)
                 trySend(if (e is OutOfMemoryError) "❌ 圖片過大，記憶體不足" else "❌ 圖片推論錯誤：${e.message}")
                 close()
             }
         }
-        awaitClose { active = false }
+        awaitClose { active.set(false) }
     }
 
     // ── 單次完整回應 ──────────────────────────────────────────────────────────
