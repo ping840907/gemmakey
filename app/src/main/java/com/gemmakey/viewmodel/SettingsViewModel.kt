@@ -21,13 +21,13 @@ import java.net.HttpURLConnection
 import java.net.URL
 import javax.inject.Inject
 
-// Fallback list shown when the API key is absent or the fetch fails
+// Fallback list shown when the API key is absent or the fetch fails.
+// Enter your API key in Settings to auto-fetch the current live model list.
 val GEMINI_MODELS = listOf(
+    "gemini-2.5-flash-preview-05-20",
+    "gemini-2.5-pro-preview-05-06",
     "gemini-2.0-flash",
     "gemini-2.0-flash-lite",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
-    "gemini-1.5-pro",
 )
 
 data class SettingsUiState(
@@ -112,7 +112,7 @@ class SettingsViewModel @Inject constructor(
     /** Returns sorted list of generateContent-capable Gemini models, or null on failure. */
     private fun fetchGeminiModels(apiKey: String): List<String>? = runCatching {
         val conn = URL(
-            "https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey"
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=$apiKey"
         ).openConnection() as HttpURLConnection
         conn.requestMethod  = "GET"
         conn.connectTimeout = 10_000

@@ -34,6 +34,8 @@ import javax.inject.Inject
 private const val MAX_HISTORY_TURNS    = 10  // max turns kept for cross-backend sharing
 private const val MAX_HISTORY_TO_GEMMA = 5   // turns injected as text prefix into Gemma
 private const val GEMMA_RECYCLE_TURNS  = 8   // recreate conversation after N turns to avoid KV-cache overflow
+private const val MAX_DISPLAY_MESSAGES = 80  // cap on UI message list to prevent OOM
+private const val DISPLAY_BITMAP_MAX   = 400 // max px for bitmaps stored in messages (thumbnail)
 
 private val WELCOME_MESSAGE = ChatMessage(
     role = MessageRole.ASSISTANT,
@@ -294,12 +296,20 @@ class ChatViewModel @Inject constructor(
     }
 
     fun sendImageMessage(bitmap: Bitmap, userHint: String = "") {
-        appendUserMessage(text = userHint.ifBlank { "📷 分析圖片記帳…" }, bitmap = bitmap)
+        // Store a small thumbnail in the message list; full-res bitmap goes to inference only.
+        val thumbnail = scaleBitmapForDisplay(bitmap)
+        appendUserMessage(text = userHint.ifBlank { "📷 分析圖片記帳…" }, bitmap = thumbnail)
         processInput(
             userText = promptBuilder.buildImageInstruction(userHint),
             bitmap   = bitmap,
             rawInput = userHint.ifBlank { "圖片輸入" }
         )
+    }
+
+    private fun scaleBitmapForDisplay(src: Bitmap): Bitmap {
+        val scale = minOf(DISPLAY_BITMAP_MAX.toFloat() / src.width, DISPLAY_BITMAP_MAX.toFloat() / src.height, 1f)
+        return if (scale >= 1f) src
+        else Bitmap.createScaledBitmap(src, (src.width * scale).toInt(), (src.height * scale).toInt(), true)
     }
 
     // ── Core inference ────────────────────────────────────────────────────────
@@ -510,20 +520,29 @@ class ChatViewModel @Inject constructor(
 
     private fun appendUserMessage(text: String, bitmap: Bitmap? = null) {
         _uiState.update { s ->
-            s.copy(messages = s.messages + ChatMessage(role = MessageRole.USER, text = text, imageBitmap = bitmap))
+            val next = s.messages + ChatMessage(role = MessageRole.USER, text = text, imageBitmap = bitmap)
+            s.copy(messages = next.capMessages())
         }
     }
 
     private fun appendAssistantMessage(text: String) {
         _uiState.update { s ->
-            s.copy(messages = s.messages + ChatMessage(role = MessageRole.ASSISTANT, text = text))
+            val next = s.messages + ChatMessage(role = MessageRole.ASSISTANT, text = text)
+            s.copy(messages = next.capMessages())
         }
     }
 
     private fun appendLoadingMessage(id: Long) {
         _uiState.update { s ->
-            s.copy(messages = s.messages + ChatMessage(id = id, role = MessageRole.ASSISTANT, text = "", isLoading = true))
+            val next = s.messages + ChatMessage(id = id, role = MessageRole.ASSISTANT, text = "", isLoading = true)
+            s.copy(messages = next.capMessages())
         }
+    }
+
+    // Keep the welcome message + the most recent (MAX_DISPLAY_MESSAGES - 1) entries.
+    private fun List<ChatMessage>.capMessages(): List<ChatMessage> {
+        if (size <= MAX_DISPLAY_MESSAGES) return this
+        return listOf(first()) + takeLast(MAX_DISPLAY_MESSAGES - 1)
     }
 
     private fun updateLoadingMessage(id: Long, text: String) {

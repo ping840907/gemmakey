@@ -182,7 +182,7 @@ fun SettingsScreen(
             )
         }
 
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.height(24.dp))
 
         Button(
             onClick = viewModel::save,
