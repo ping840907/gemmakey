@@ -10,7 +10,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.gemmakey.ai.BackendMode
@@ -19,19 +18,13 @@ import com.gemmakey.ai.InferenceBackend
 import com.gemmakey.ui.components.ConfirmationDialog
 import com.gemmakey.ui.components.InputBar
 import com.gemmakey.ui.components.MessageBubble
-import com.gemmakey.utils.ImageUtils
 import com.gemmakey.viewmodel.ChatViewModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(viewModel: ChatViewModel = hiltViewModel()) {
     val uiState by viewModel.uiState.collectAsState()
-    val context = LocalContext.current
     val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
 
     LaunchedEffect(uiState.messages.size) {
         if (uiState.messages.isNotEmpty()) {
@@ -97,12 +90,7 @@ fun ChatScreen(viewModel: ChatViewModel = hiltViewModel()) {
             isGenerating  = uiState.isGenerating,
             onSendText    = viewModel::sendTextMessage,
             onVoiceResult = viewModel::sendVoiceResult,
-            onImageSelected = { uri ->
-                scope.launch {
-                    val bitmap = withContext(Dispatchers.IO) { ImageUtils.uriToBitmap(context, uri) }
-                    bitmap?.let { viewModel.sendImageMessage(it) }
-                }
-            }
+            onImageSelected = { uri -> viewModel.sendImageUri(uri) }
         )
     }
 }

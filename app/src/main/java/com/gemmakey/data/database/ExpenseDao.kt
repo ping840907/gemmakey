@@ -16,7 +16,7 @@ interface ExpenseDao {
     @Delete
     suspend fun delete(expense: ExpenseEntity)
 
-    @Query("SELECT * FROM expenses ORDER BY dateEpochDay DESC, id DESC")
+    @Query("SELECT * FROM expenses ORDER BY dateEpochDay DESC, id DESC LIMIT 500")
     fun observeAll(): Flow<List<ExpenseEntity>>
 
     @Query("SELECT * FROM expenses WHERE dateEpochDay BETWEEN :from AND :to ORDER BY dateEpochDay DESC")
@@ -25,8 +25,8 @@ interface ExpenseDao {
     @Query("SELECT * FROM expenses ORDER BY dateEpochDay DESC LIMIT :limit")
     suspend fun getRecent(limit: Int = 50): List<ExpenseEntity>
 
-    @Query("SELECT * FROM expenses WHERE dateEpochDay BETWEEN :from AND :to")
-    suspend fun getByDateRange(from: Long, to: Long): List<ExpenseEntity>
+    @Query("SELECT * FROM expenses WHERE dateEpochDay BETWEEN :from AND :to ORDER BY dateEpochDay DESC LIMIT :limit")
+    suspend fun getByDateRange(from: Long, to: Long, limit: Int = 300): List<ExpenseEntity>
 
     @Query("SELECT * FROM expenses WHERE category = :category ORDER BY dateEpochDay DESC LIMIT :limit")
     suspend fun getByCategory(category: String, limit: Int = 20): List<ExpenseEntity>

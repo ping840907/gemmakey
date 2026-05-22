@@ -1,12 +1,15 @@
 package com.gemmakey.viewmodel
 
+import android.content.Context
 import android.graphics.Bitmap
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.gemmakey.ai.AppSettings
 import com.gemmakey.ai.BackendMode
 import com.gemmakey.ai.BackendType
 import com.gemmakey.ai.ConversationTurn
+import com.gemmakey.ai.DeviceCapability
 import com.gemmakey.ai.ExpenseToolSet
 import com.gemmakey.ai.GeminiChatManager
 import com.gemmakey.ai.GemmaInferenceManager
@@ -19,9 +22,11 @@ import com.gemmakey.model.ChatMessage
 import com.gemmakey.model.ExpenseEntry
 import com.gemmakey.model.MessageRole
 import com.gemmakey.model.ParsedExpense
+import com.gemmakey.utils.ImageUtils
 import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ToolProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,9 +38,8 @@ import javax.inject.Inject
 
 private const val MAX_HISTORY_TURNS    = 10  // max turns kept for cross-backend sharing
 private const val MAX_HISTORY_TO_GEMMA = 5   // turns injected as text prefix into Gemma
-private const val GEMMA_RECYCLE_TURNS  = 8   // recreate conversation after N turns to avoid KV-cache overflow
-private const val MAX_DISPLAY_MESSAGES = 80  // cap on UI message list to prevent OOM
-private const val DISPLAY_BITMAP_MAX   = 400 // max px for bitmaps stored in messages (thumbnail)
+// Device-specific limits (GEMMA_RECYCLE_TURNS, MAX_DISPLAY_MESSAGES, thumbnail size)
+// come from DeviceCapability to match device RAM tier.
 
 private val WELCOME_MESSAGE = ChatMessage(
     role = MessageRole.ASSISTANT,
@@ -55,6 +59,8 @@ data class ChatUiState(
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
+    private val deviceCapability: DeviceCapability,
     private val gemma: GemmaInferenceManager,
     private val gemini: GeminiChatManager,
     private val promptBuilder: PromptBuilder,
@@ -295,8 +301,31 @@ class ChatViewModel @Inject constructor(
         processInput(userText = transcribed, bitmap = null, rawInput = transcribed)
     }
 
+    /**
+     * Preferred image entry point: decodes [uri] on the IO thread using the
+     * device-appropriate max resolution, guards against low-heap conditions,
+     * then delegates to [sendImageMessage].
+     */
+    fun sendImageUri(uri: Uri, userHint: String = "") {
+        // Estimate heap needed: imageSizePx² × 4 bytes (ARGB) × 5× safety factor for
+        // PNG encoding + native KV-cache allocation. Use at least 60 MB as a floor.
+        val px = deviceCapability.imageSizePx.toLong()
+        val estimatedMb = ((px * px * 4L * 5L) / 1_048_576L).toInt().coerceAtLeast(60)
+        if (!deviceCapability.hasHeapFor(estimatedMb)) {
+            appendAssistantMessage("⚠️ 裝置記憶體不足（剩餘空間過少），請先清除對話後再嘗試")
+            return
+        }
+        viewModelScope.launch {
+            val bitmap = withContext(Dispatchers.IO) {
+                ImageUtils.uriToBitmap(context, uri, deviceCapability.imageSizePx)
+            }
+            if (bitmap != null) sendImageMessage(bitmap, userHint)
+            else appendAssistantMessage("⚠️ 無法讀取圖片，請重試")
+        }
+    }
+
     fun sendImageMessage(bitmap: Bitmap, userHint: String = "") {
-        // Store a small thumbnail in the message list; full-res bitmap goes to inference only.
+        // Store a small thumbnail in the message list; the full-res bitmap goes to inference.
         val thumbnail = scaleBitmapForDisplay(bitmap)
         appendUserMessage(text = userHint.ifBlank { "📷 分析圖片記帳…" }, bitmap = thumbnail)
         processInput(
@@ -307,7 +336,8 @@ class ChatViewModel @Inject constructor(
     }
 
     private fun scaleBitmapForDisplay(src: Bitmap): Bitmap {
-        val scale = minOf(DISPLAY_BITMAP_MAX.toFloat() / src.width, DISPLAY_BITMAP_MAX.toFloat() / src.height, 1f)
+        val maxPx = deviceCapability.thumbnailSizePx
+        val scale = minOf(maxPx.toFloat() / src.width, maxPx.toFloat() / src.height, 1f)
         return if (scale >= 1f) src
         else Bitmap.createScaledBitmap(src, (src.width * scale).toInt(), (src.height * scale).toInt(), true)
     }
@@ -393,8 +423,9 @@ class ChatViewModel @Inject constructor(
     private suspend fun processWithGemma(
         messageText: String, bitmap: Bitmap?, loadingId: Long, rawInput: String
     ): String? {
-        // Proactively recycle conversation before the KV-cache fills up
-        if (gemmaConversationTurns >= GEMMA_RECYCLE_TURNS) {
+        // Proactively recycle conversation before the KV-cache fills up.
+        // Threshold is tier-aware: low-end devices recycle more aggressively.
+        if (gemmaConversationTurns >= deviceCapability.gemmaRecycleTurns) {
             withContext(Dispatchers.IO) {
                 conversation?.close()
                 conversation = createNewConversation()
@@ -409,10 +440,18 @@ class ChatViewModel @Inject constructor(
         else
             gemma.generateStream(messageText, conversation)
 
+        // Throttled UI updates: calling toString() on every token creates O(n²)
+        // intermediate String objects. We repaint at most every streamUiIntervalMs ms.
+        var lastPaintMs = 0L
         stream.collect { token ->
             responseBuilder.append(token)
-            updateLoadingMessage(loadingId, responseBuilder.toString())
+            val now = System.currentTimeMillis()
+            if (now - lastPaintMs >= deviceCapability.streamUiIntervalMs) {
+                updateLoadingMessage(loadingId, responseBuilder.toString())
+                lastPaintMs = now
+            }
         }
+        updateLoadingMessage(loadingId, responseBuilder.toString())  // final flush
 
         gemmaConversationTurns++
 
@@ -437,10 +476,16 @@ class ChatViewModel @Inject constructor(
         gemini.clearToolCall()
         val responseBuilder = StringBuilder()
 
+        var lastPaintMs = 0L
         gemini.generateStream(messageText, bitmap).collect { chunk ->
             responseBuilder.append(chunk)
-            updateLoadingMessage(loadingId, responseBuilder.toString())
+            val now = System.currentTimeMillis()
+            if (now - lastPaintMs >= deviceCapability.streamUiIntervalMs) {
+                updateLoadingMessage(loadingId, responseBuilder.toString())
+                lastPaintMs = now
+            }
         }
+        updateLoadingMessage(loadingId, responseBuilder.toString())  // final flush
 
         val toolResult = gemini.lastToolCall
         return if (toolResult != null) {
@@ -539,10 +584,11 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    // Keep the welcome message + the most recent (MAX_DISPLAY_MESSAGES - 1) entries.
+    // Keep welcome message + the most recent (maxDisplayMessages - 1) entries.
     private fun List<ChatMessage>.capMessages(): List<ChatMessage> {
-        if (size <= MAX_DISPLAY_MESSAGES) return this
-        return listOf(first()) + takeLast(MAX_DISPLAY_MESSAGES - 1)
+        val limit = deviceCapability.maxDisplayMessages
+        if (size <= limit) return this
+        return listOf(first()) + takeLast(limit - 1)
     }
 
     private fun updateLoadingMessage(id: Long, text: String) {

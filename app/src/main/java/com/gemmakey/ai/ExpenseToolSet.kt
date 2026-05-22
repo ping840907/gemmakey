@@ -16,6 +16,24 @@ class ExpenseToolSet : ToolSet {
     @Volatile var lastCall: ParsedExpense? = null
         private set
 
+    // Pre-compiled at class-load time; Regex compilation is expensive and these
+    // patterns are applied to every model response, so they must not be re-created.
+    private companion object {
+        val RE_NORMALIZE  = Regex("""<\|["']\|>""")
+        val RE_TOOL_CALL  = Regex(
+            """<tool_call>\s*(\{.*?\})\s*</tool_call>""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        )
+        val RE_BARE_JSON  = Regex(
+            """\{[^{}]*"name"\s*:\s*"record_expense"[^{}]*\}""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        )
+        val RE_LEGACY     = Regex(
+            """call\s*:\s*record_(expense|income)\s*\{([^}]+)\}""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        )
+    }
+
     @Tool(description = "記錄一筆支出或收入到記帳系統，並顯示確認表格讓用戶核對後儲存")
     fun record_expense(
         @ToolParam(description = "金額，正數數字，不含貨幣符號")
@@ -73,31 +91,22 @@ class ExpenseToolSet : ToolSet {
      * Special quote tokens like <|"|> are normalised to " before matching.
      */
     fun parseFromToolCallText(response: String): ParsedExpense? {
-        val normalized = response.replace(Regex("""<\|["']\|>"""), "\"")
+        val normalized = response.replace(RE_NORMALIZE, "\"")
 
         // 1. Structured <tool_call> JSON format (Gemma instruction-tuned output)
-        val toolCallMatch = Regex(
-            """<tool_call>\s*(\{.*?\})\s*</tool_call>""",
-            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
-        ).find(normalized)
+        val toolCallMatch = RE_TOOL_CALL.find(normalized)
         if (toolCallMatch != null) {
             return parseToolCallJson(toolCallMatch.groupValues[1])
         }
 
         // 2. Bare JSON object that contains "record_expense"
-        val bareJsonMatch = Regex(
-            """\{[^{}]*"name"\s*:\s*"record_expense"[^{}]*\}""",
-            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
-        ).find(normalized)
+        val bareJsonMatch = RE_BARE_JSON.find(normalized)
         if (bareJsonMatch != null) {
             return parseToolCallJson(bareJsonMatch.value)
         }
 
         // 3. Legacy call:record_expense{...} format
-        val legacyMatch = Regex(
-            """call\s*:\s*record_(expense|income)\s*\{([^}]+)\}""",
-            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
-        ).find(normalized) ?: return null
+        val legacyMatch = RE_LEGACY.find(normalized) ?: return null
 
         val calledIncome = legacyMatch.groupValues[1].equals("income", ignoreCase = true)
         val args = legacyMatch.groupValues[2]
