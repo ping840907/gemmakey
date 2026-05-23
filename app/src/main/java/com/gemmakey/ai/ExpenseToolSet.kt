@@ -39,7 +39,7 @@ class ExpenseToolSet : ToolSet {
         @ToolParam(description = "金額，正數數字，不含貨幣符號")
         amount: Double,
 
-        @ToolParam(description = "交易類型：EXPENSE 為支出，INCOME 為收入")
+        @ToolParam(description = "INCOME 或 EXPENSE。訊息含「收入/薪水/薪資/獎金/紅包/利息/股息/退款/退費/補貼」→ INCOME；其餘花費消費 → EXPENSE")
         type: String,
 
         @ToolParam(
