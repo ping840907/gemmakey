@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "GemmaKey"
+rootProject.name = "MoneyTalks"
 include(":app")

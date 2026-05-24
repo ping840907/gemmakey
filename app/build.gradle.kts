@@ -7,11 +7,11 @@ plugins {
 }
 
 android {
-    namespace  = "com.gemmakey"
+    namespace  = "com.moneytalks"
     compileSdk = 35   // Gallery uses 35 (stable Android 15); 36 = Android 16 Beta
 
     defaultConfig {
-        applicationId = "com.gemmakey"
+        applicationId = "com.moneytalks"
         minSdk        = 31   // LiteRT-LM 0.11.0 minimum (Gallery-confirmed)
         targetSdk     = 35
         versionCode   = 1
