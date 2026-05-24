@@ -21,7 +21,7 @@ import com.gemmakey.ui.screens.HistoryScreen
 import com.gemmakey.ui.screens.OnboardingScreen
 import com.gemmakey.ui.screens.SettingsScreen
 import com.gemmakey.ui.screens.StatisticsScreen
-import com.gemmakey.ui.theme.TanQianTheme
+import com.gemmakey.ui.theme.MoneyTalksTheme
 import com.gemmakey.viewmodel.ChatViewModel
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -35,7 +35,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            TanQianTheme {
+            MoneyTalksTheme {
                 var showOnboarding by remember { mutableStateOf(!appSettings.onboardingCompleted) }
 
                 if (showOnboarding) {

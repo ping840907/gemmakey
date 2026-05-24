@@ -22,7 +22,7 @@ enum class BackendType { GEMMA_LOCAL, GEMINI_API }
 @Singleton
 class AppSettings @Inject constructor(@ApplicationContext context: Context) {
 
-    private val prefs = context.getSharedPreferences("tanqian_settings", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences("moneytalks_settings", Context.MODE_PRIVATE)
 
     // ── BackendMode (user preference) ────────────────────────────────────────
 

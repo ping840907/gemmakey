@@ -15,7 +15,7 @@ private val LightColorScheme = lightColorScheme(
 )
 
 @Composable
-fun TanQianTheme(
+fun MoneyTalksTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = true,
     content: @Composable () -> Unit
