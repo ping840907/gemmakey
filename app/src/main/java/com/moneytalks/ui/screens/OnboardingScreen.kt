@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.moneytalks.ai.ModelDownloadManager
+import com.moneytalks.viewmodel.GEMINI_MODELS
 import com.moneytalks.viewmodel.OnboardingViewModel
 import kotlinx.coroutines.delay
 
@@ -70,10 +71,13 @@ fun OnboardingScreen(
                         onNext             = viewModel::nextPage
                     )
                     2 -> ApiKeyPage(
-                        apiKey         = uiState.apiKey,
-                        onApiKeyChange = viewModel::setApiKey,
-                        onBack         = viewModel::prevPage,
-                        onComplete     = { viewModel.complete(); onComplete() }
+                        apiKey           = uiState.apiKey,
+                        onApiKeyChange   = viewModel::setApiKey,
+                        modelName        = uiState.modelName,
+                        availableModels  = GEMINI_MODELS,
+                        onModelChange    = viewModel::setModelName,
+                        onBack           = viewModel::prevPage,
+                        onComplete       = { viewModel.complete(); onComplete() }
                     )
                     else -> LaunchedEffect(Unit) { viewModel.complete(); onComplete() }
                 }
@@ -448,14 +452,19 @@ private fun LocalModelPage(
 
 // ── Page 2: API Key ────────────────────────────────────────────────────────────
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ApiKeyPage(
     apiKey: String,
     onApiKeyChange: (String) -> Unit,
+    modelName: String,
+    availableModels: List<String>,
+    onModelChange: (String) -> Unit,
     onBack: () -> Unit,
     onComplete: () -> Unit
 ) {
-    var showKey by remember { mutableStateOf(false) }
+    var showKey       by remember { mutableStateOf(false) }
+    var modelExpanded by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -502,6 +511,35 @@ private fun ApiKeyPage(
                 }
             }
         )
+
+        Spacer(Modifier.height(12.dp))
+
+        ExposedDropdownMenuBox(
+            expanded         = modelExpanded,
+            onExpandedChange = { modelExpanded = it }
+        ) {
+            OutlinedTextField(
+                value         = modelName.ifBlank { availableModels.firstOrNull() ?: "" },
+                onValueChange = {},
+                readOnly      = true,
+                label         = { Text("模型") },
+                trailingIcon  = { ExposedDropdownMenuDefaults.TrailingIcon(modelExpanded) },
+                modifier      = Modifier
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                    .fillMaxWidth()
+            )
+            ExposedDropdownMenu(
+                expanded         = modelExpanded,
+                onDismissRequest = { modelExpanded = false }
+            ) {
+                availableModels.forEach { name ->
+                    DropdownMenuItem(
+                        text    = { Text(name, style = MaterialTheme.typography.bodyMedium) },
+                        onClick = { onModelChange(name); modelExpanded = false }
+                    )
+                }
+            }
+        }
 
         Spacer(Modifier.height(10.dp))
 

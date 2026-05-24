@@ -154,11 +154,22 @@ class SettingsViewModel @Inject constructor(
                 repository.replaceAll(data.entries)
                 data.entries.size to 0
             } else {
-                val existingKeys = repository.getAllEntries().mapTo(HashSet()) {
-                    "${it.date}|${it.category.name}|${it.amount}|${it.description}"
+                // Count-based dedup: two entries with identical fields consume one "slot" each,
+                // so duplicate legitimate records (e.g. two lunches on the same day) are preserved.
+                val existingCounts = mutableMapOf<String, Int>()
+                repository.getAllEntries().forEach { e ->
+                    val key = "${e.date}|${e.category.name}|${e.amount}|${e.description}"
+                    existingCounts[key] = (existingCounts[key] ?: 0) + 1
                 }
-                val toInsert = data.entries.filter { e ->
-                    "${e.date}|${e.category.name}|${e.amount}|${e.description}" !in existingKeys
+                val toInsert = mutableListOf<ExpenseEntry>()
+                data.entries.forEach { e ->
+                    val key       = "${e.date}|${e.category.name}|${e.amount}|${e.description}"
+                    val remaining = existingCounts[key] ?: 0
+                    if (remaining > 0) {
+                        existingCounts[key] = remaining - 1   // consume one matching slot
+                    } else {
+                        toInsert.add(e)
+                    }
                 }
                 repository.insertAll(toInsert)
                 toInsert.size to (data.entries.size - toInsert.size)

@@ -23,34 +23,37 @@ class OnboardingViewModel @Inject constructor(
 
     data class UiState(
         val page: Int = 0,
-        val apiKey: String = ""
+        val apiKey: String = "",
+        val modelName: String = ""
     )
 
-    private val _uiState = MutableStateFlow(UiState(apiKey = appSettings.geminiApiKey))
+    private val _uiState = MutableStateFlow(
+        UiState(
+            apiKey    = appSettings.geminiApiKey,
+            modelName = appSettings.geminiModelName
+        )
+    )
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
     val isModelInstalled: Boolean get() = gemma.isModelInstalled()
 
     init {
-        // When download finishes, automatically advance if user is still on model page
         viewModelScope.launch {
-            modelDownload.state.collect { state ->
-                if (state is ModelDownloadManager.DownloadState.Done &&
-                    _uiState.value.page == 1) {
-                    // Stay on page so user sees the success state before proceeding
-                }
-            }
+            modelDownload.state.collect { /* stay on page so user sees success state */ }
         }
     }
 
-    fun nextPage() = _uiState.update { it.copy(page = it.page + 1) }
-    fun prevPage() = _uiState.update { it.copy(page = (it.page - 1).coerceAtLeast(0)) }
+    fun nextPage()  = _uiState.update { it.copy(page = it.page + 1) }
+    fun prevPage()  = _uiState.update { it.copy(page = (it.page - 1).coerceAtLeast(0)) }
 
-    fun setApiKey(key: String) = _uiState.update { it.copy(apiKey = key) }
+    fun setApiKey(key: String)    = _uiState.update { it.copy(apiKey = key) }
+    fun setModelName(name: String) = _uiState.update { it.copy(modelName = name) }
 
     fun complete() {
-        val key = _uiState.value.apiKey.trim()
+        val key       = _uiState.value.apiKey.trim()
+        val modelName = _uiState.value.modelName.ifBlank { "gemini-2.0-flash" }
         if (key.isNotBlank()) appSettings.geminiApiKey = key
+        appSettings.geminiModelName = modelName
 
         val hasModel = gemma.isModelInstalled()
         val hasKey   = appSettings.geminiApiKey.isNotBlank()
