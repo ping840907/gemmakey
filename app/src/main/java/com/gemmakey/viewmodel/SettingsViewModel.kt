@@ -147,10 +147,22 @@ class SettingsViewModel @Inject constructor(
         ImportStagedData(entries, repository.count())
     }
 
-    suspend fun commitImport(data: ImportStagedData, merge: Boolean) =
+    // Returns Pair(inserted, skipped). For overwrite, skipped is always 0.
+    suspend fun commitImport(data: ImportStagedData, merge: Boolean): Pair<Int, Int> =
         withContext(Dispatchers.IO) {
-            if (merge) repository.insertAll(data.entries)
-            else       repository.replaceAll(data.entries)
+            if (!merge) {
+                repository.replaceAll(data.entries)
+                data.entries.size to 0
+            } else {
+                val existingKeys = repository.getAllEntries().mapTo(HashSet()) {
+                    "${it.date}|${it.category.name}|${it.amount}|${it.description}"
+                }
+                val toInsert = data.entries.filter { e ->
+                    "${e.date}|${e.category.name}|${e.amount}|${e.description}" !in existingKeys
+                }
+                repository.insertAll(toInsert)
+                toInsert.size to (data.entries.size - toInsert.size)
+            }
         }
 
     // ── Model fetching ────────────────────────────────────────────────────────

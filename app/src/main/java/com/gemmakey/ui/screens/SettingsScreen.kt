@@ -111,8 +111,8 @@ fun SettingsScreen(
                 if (staged.existingCount > 0) {
                     importStaged = staged
                 } else {
-                    viewModel.commitImport(staged, merge = false)
-                    snackbarHostState.showSnackbar("已導入 ${staged.entries.size} 筆記錄")
+                    val (inserted, _) = viewModel.commitImport(staged, merge = false)
+                    snackbarHostState.showSnackbar("已導入 $inserted 筆記錄")
                 }
             }.onFailure {
                 snackbarHostState.showSnackbar("解析失敗：格式不正確")
@@ -138,7 +138,11 @@ fun SettingsScreen(
                     importStaged = null
                     scope.launch {
                         runCatching { viewModel.commitImport(data, merge = true) }
-                            .onSuccess { snackbarHostState.showSnackbar("已合併導入 ${data.entries.size} 筆記錄") }
+                            .onSuccess { (inserted, skipped) ->
+                                val msg = if (skipped > 0) "已新增 $inserted 筆，略過 $skipped 筆重複"
+                                          else "已合併導入 $inserted 筆記錄"
+                                snackbarHostState.showSnackbar(msg)
+                            }
                             .onFailure { snackbarHostState.showSnackbar("導入失敗：${it.message}") }
                     }
                 }) { Text("合併") }
@@ -154,7 +158,7 @@ fun SettingsScreen(
                             importStaged = null
                             scope.launch {
                                 runCatching { viewModel.commitImport(data, merge = false) }
-                                    .onSuccess { snackbarHostState.showSnackbar("已覆蓋，導入 ${data.entries.size} 筆記錄") }
+                                    .onSuccess { (inserted, _) -> snackbarHostState.showSnackbar("已覆蓋，導入 $inserted 筆記錄") }
                                     .onFailure { snackbarHostState.showSnackbar("導入失敗：${it.message}") }
                             }
                         },
