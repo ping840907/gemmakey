@@ -37,10 +37,22 @@ private const val TEMPERATURE    = 0.7f
 
 enum class InferenceBackend { NPU, GPU, CPU }
 
+/**
+ * NPU vendor detected at runtime via SoC identifiers.
+ *
+ * QUALCOMM / MEDIATEK  → Backend.NPU attempted (dispatch libs bundled in litertlm-android).
+ * GOOGLE_TENSOR        → Detected but skipped: Google Tensor NPU requires an AOT-compiled model
+ *                        + google_tensor_runtime Play Feature Delivery module (LiteRT NPU Beta,
+ *                        on-device JIT not yet supported). Falls back to GPU automatically.
+ * UNKNOWN              → No NPU attempted; GPU → CPU fallback only.
+ */
+enum class SocVendor { QUALCOMM, MEDIATEK, GOOGLE_TENSOR, UNKNOWN }
+
 data class InferenceState(
     val isReady: Boolean = false,
     val isLoading: Boolean = false,
     val backend: InferenceBackend = InferenceBackend.GPU,
+    val socVendor: SocVendor = SocVendor.UNKNOWN,
     val error: String? = null
 )
 
@@ -51,6 +63,7 @@ class GemmaInferenceManager @Inject constructor(
 ) {
     private var engine: Engine? = null
     private var activeBackend: InferenceBackend = InferenceBackend.GPU
+    private var detectedSocVendor: SocVendor = SocVendor.UNKNOWN
     var state: InferenceState = InferenceState()
         private set
 
@@ -69,6 +82,7 @@ class GemmaInferenceManager @Inject constructor(
             return@withContext state
         }
 
+        detectedSocVendor = detectSocVendor()
         val (eng, backend) = tryCreateEngine(modelPath)
         if (eng == null) {
             state = InferenceState(error = "模型初始化失敗，請確認裝置相容性與記憶體空間")
@@ -76,21 +90,34 @@ class GemmaInferenceManager @Inject constructor(
         }
         engine = eng
         activeBackend = backend
-        state = InferenceState(isReady = true, backend = backend)
-        Log.i(TAG, "Gemma ready — backend=$backend  tier=${deviceCapability.tier}  model=$modelPath")
+        state = InferenceState(isReady = true, backend = backend, socVendor = detectedSocVendor)
+        Log.i(TAG, "Gemma ready — backend=$backend  soc=$detectedSocVendor  tier=${deviceCapability.tier}  model=$modelPath")
         state
     }
 
     // ── 後端選擇 ──────────────────────────────────────────────────────────────
 
     private suspend fun tryCreateEngine(modelPath: String): Pair<Engine?, InferenceBackend> {
-        // NPU: only attempt on Qualcomm / MediaTek SoCs (API 31 → Build.SOC_MANUFACTURER).
-        // LiteRT-LM 0.11.0 calls std::terminate() when QNN / NeuroPilot runtime is absent.
-        if (isNpuSocLikely()) {
-            runCatching {
-                buildEngine(modelPath, Backend.NPU(context.applicationInfo.nativeLibraryDir), Backend.CPU())
-            }.onSuccess { return it to InferenceBackend.NPU }
-             .onFailure  { Log.w(TAG, "NPU unavailable: ${it.message}") }
+        when (detectedSocVendor) {
+            // LiteRT-LM 0.11.0 bundles QNN (Qualcomm) and NeuroPilot (MediaTek) dispatch libs.
+            // Backend.NPU(nativeLibraryDir) discovers the right lib automatically.
+            // WARNING: calling Backend.NPU on a device whose runtime .so is absent causes
+            // std::terminate() — never attempt NPU for unsupported vendors.
+            SocVendor.QUALCOMM, SocVendor.MEDIATEK -> {
+                runCatching {
+                    buildEngine(modelPath, Backend.NPU(context.applicationInfo.nativeLibraryDir), Backend.CPU())
+                }.onSuccess { return it to InferenceBackend.NPU }
+                 .onFailure  { Log.w(TAG, "NPU unavailable (${detectedSocVendor.name}): ${it.message}") }
+            }
+            // Google Tensor NPU (Pixel 8+) is in LiteRT NPU Beta (May 2025).
+            // JIT on-device compilation is NOT yet supported; AOT compilation requires the
+            // google_tensor_runtime Play Feature Delivery module which is not bundled here.
+            // Detect and log only — fall through to GPU.
+            SocVendor.GOOGLE_TENSOR -> {
+                Log.i(TAG, "Google Tensor NPU detected (${Build.SOC_MODEL}) — " +
+                    "NPU requires AOT model + google_tensor_runtime Play Feature Delivery; using GPU")
+            }
+            SocVendor.UNKNOWN -> { /* no NPU attempted */ }
         }
 
         runCatching {
@@ -106,9 +133,31 @@ class GemmaInferenceManager @Inject constructor(
         return null to InferenceBackend.CPU
     }
 
-    private fun isNpuSocLikely(): Boolean {
-        val soc = Build.SOC_MANUFACTURER.lowercase()
-        return soc.contains("qualcomm") || soc.contains("mediatek")
+    /**
+     * Identifies the NPU vendor from SoC identifiers (API 31+).
+     *
+     * Google Tensor SoCs are manufactured by Samsung but branded "google".
+     * Known Tensor SOC_MODEL prefixes: gs (G1/G2), zuma (G3), zumapro (G3 Pro),
+     * tango (G4), rio (G5).  Brand check covers future models automatically.
+     */
+    private fun detectSocVendor(): SocVendor {
+        val mfr   = Build.SOC_MANUFACTURER.lowercase()
+        val model = Build.SOC_MODEL.lowercase()
+        val brand = Build.BRAND.lowercase()
+        return when {
+            mfr.contains("qualcomm")  -> SocVendor.QUALCOMM
+            mfr.contains("mediatek")  -> SocVendor.MEDIATEK
+            brand == "google"
+                || mfr.contains("google")
+                || model.startsWith("gs")          // Tensor G1 / G2
+                || model.startsWith("zuma")         // Tensor G3 / G3 Pro
+                || model == "tango"                 // Tensor G4
+                || model == "rio"                   // Tensor G5
+                -> SocVendor.GOOGLE_TENSOR
+            else -> SocVendor.UNKNOWN
+        }.also { vendor ->
+            Log.i(TAG, "SoC detection: vendor=$vendor  mfr=${Build.SOC_MANUFACTURER}  model=${Build.SOC_MODEL}  brand=${Build.BRAND}")
+        }
     }
 
     private fun buildEngine(modelPath: String, backend: Backend, visionBackend: Backend): Engine {
