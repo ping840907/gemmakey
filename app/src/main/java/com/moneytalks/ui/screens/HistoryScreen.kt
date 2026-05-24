@@ -19,7 +19,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.moneytalks.model.ExpenseEntry
 import com.moneytalks.model.ExpenseType
 import com.moneytalks.model.ParsedExpense
@@ -176,11 +176,12 @@ private fun DateHeader(date: LocalDate) {
 @Composable
 private fun SwipeableExpenseRow(entry: ExpenseEntry, onDelete: () -> Unit) {
     val dismissState = rememberSwipeToDismissBoxState(
-        confirmValueChange = { value ->
-            if (value == SwipeToDismissBoxValue.EndToStart) { onDelete(); true } else false
-        },
         positionalThreshold = { it * 0.4f }
     )
+
+    LaunchedEffect(dismissState.currentValue) {
+        if (dismissState.currentValue == SwipeToDismissBoxValue.EndToStart) onDelete()
+    }
 
     SwipeToDismissBox(
         state = dismissState,
