@@ -44,6 +44,7 @@ class OnboardingViewModel @Inject constructor(
     }
 
     fun nextPage() = _uiState.update { it.copy(page = it.page + 1) }
+    fun prevPage() = _uiState.update { it.copy(page = (it.page - 1).coerceAtLeast(0)) }
 
     fun setApiKey(key: String) = _uiState.update { it.copy(apiKey = key) }
 
