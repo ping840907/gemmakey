@@ -12,6 +12,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -28,7 +31,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.moneytalks.ai.ModelDownloadManager
 import com.moneytalks.viewmodel.OnboardingViewModel
 import kotlinx.coroutines.delay
@@ -226,7 +229,7 @@ private fun WelcomePage(onNext: () -> Unit) {
         ) {
             Text("開始使用", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.width(8.dp))
-            Icon(Icons.Default.ArrowForward, contentDescription = null)
+            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)
         }
 
         // Space for page indicator
@@ -289,7 +292,7 @@ private fun LocalModelPage(
     ) {
         Row(modifier = Modifier.fillMaxWidth()) {
             IconButton(onClick = onBack) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "返回")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
             }
         }
 
@@ -441,7 +444,7 @@ private fun LocalModelPage(
             if (isDone) {
                 Spacer(Modifier.width(4.dp))
                 Icon(
-                    Icons.Default.ArrowForward,
+                    Icons.AutoMirrored.Filled.ArrowForward,
                     contentDescription = null,
                     modifier = Modifier.size(18.dp)
                 )
@@ -479,7 +482,7 @@ private fun ApiKeyPage(
     ) {
         Row(modifier = Modifier.fillMaxWidth()) {
             IconButton(onClick = onBack) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "返回")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
             }
         }
 
@@ -535,7 +538,7 @@ private fun ApiKeyPage(
                     }
                 },
                 modifier      = Modifier
-                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                    .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
                     .fillMaxWidth()
             )
             ExposedDropdownMenu(
@@ -568,7 +571,7 @@ private fun ApiKeyPage(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                Icons.Default.OpenInNew,
+                Icons.AutoMirrored.Filled.OpenInNew,
                 contentDescription = null,
                 modifier = Modifier.size(14.dp),
                 tint     = MaterialTheme.colorScheme.primary
