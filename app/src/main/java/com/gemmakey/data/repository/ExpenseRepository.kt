@@ -58,6 +58,19 @@ class ExpenseRepository @Inject constructor(private val dao: ExpenseDao) {
         return dao.getRecentFromDate(thirtyDaysAgo, limit).map { it.toDomain() }
     }
 
+    // ── Backup / Restore ─────────────────────────────────────────────────────
+
+    suspend fun getAllEntries(): List<ExpenseEntry> =
+        dao.getAll().map { it.toDomain() }
+
+    suspend fun count(): Int = dao.count()
+
+    suspend fun insertAll(entries: List<ExpenseEntry>) =
+        dao.insertAll(entries.map { it.toEntity().copy(id = 0) })
+
+    suspend fun replaceAll(entries: List<ExpenseEntry>) =
+        dao.replaceAll(entries.map { it.toEntity().copy(id = 0) })
+
     private fun ExpenseEntity.toDomain() = ExpenseEntry(
         id = id,
         amount = amount,

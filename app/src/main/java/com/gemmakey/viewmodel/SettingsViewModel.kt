@@ -7,6 +7,10 @@ import com.gemmakey.ai.AppSettings
 import com.gemmakey.ai.BackendMode
 import com.gemmakey.ai.GemmaInferenceManager
 import com.gemmakey.ai.ModelDownloadManager
+import com.gemmakey.data.repository.ExpenseRepository
+import com.gemmakey.model.ExpenseCategory
+import com.gemmakey.model.ExpenseEntry
+import com.gemmakey.model.ExpenseType
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -17,9 +21,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.time.LocalDate
 import javax.inject.Inject
 
 // Fallback list shown when the API key is absent or the fetch fails.
@@ -41,11 +47,17 @@ data class SettingsUiState(
     val isSaved: Boolean = false
 )
 
+data class ImportStagedData(
+    val entries: List<ExpenseEntry>,
+    val existingCount: Int
+)
+
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val appSettings: AppSettings,
     private val gemma: GemmaInferenceManager,
-    val modelDownload: ModelDownloadManager
+    val modelDownload: ModelDownloadManager,
+    private val repository: ExpenseRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(
@@ -61,11 +73,9 @@ class SettingsViewModel @Inject constructor(
     private var modelFetchJob: Job? = null
 
     init {
-        // If a key is already saved, fetch models on open
         val savedKey = appSettings.geminiApiKey
         if (savedKey.isNotBlank()) scheduleFetch(savedKey, debounceMs = 0)
 
-        // Refresh model installation status when download completes
         viewModelScope.launch {
             modelDownload.state.collect { state ->
                 if (state is ModelDownloadManager.DownloadState.Done) {
@@ -95,6 +105,53 @@ class SettingsViewModel @Inject constructor(
         appSettings.geminiModelName = s.geminiModelName
         _uiState.update { it.copy(isSaved = true) }
     }
+
+    // ── Backup / Restore ─────────────────────────────────────────────────────
+
+    suspend fun exportToJson(): String = withContext(Dispatchers.IO) {
+        val entries = repository.getAllEntries()
+        val arr = JSONArray()
+        entries.forEach { e ->
+            arr.put(JSONObject().apply {
+                put("amount",      e.amount)
+                put("type",        e.type.name)
+                put("category",    e.category.name)
+                put("description", e.description)
+                put("date",        e.date.toString())
+                put("rawInput",    e.rawInput)
+            })
+        }
+        JSONObject().apply {
+            put("version",    1)
+            put("exportedAt", LocalDate.now().toString())
+            put("count",      entries.size)
+            put("records",    arr)
+        }.toString(2)
+    }
+
+    suspend fun prepareImport(json: String): ImportStagedData = withContext(Dispatchers.IO) {
+        val obj     = JSONObject(json)
+        val records = obj.getJSONArray("records")
+        val entries = (0 until records.length()).map { i ->
+            val r = records.getJSONObject(i)
+            ExpenseEntry(
+                id          = 0,
+                amount      = r.getDouble("amount"),
+                type        = ExpenseType.valueOf(r.getString("type")),
+                category    = ExpenseCategory.fromString(r.getString("category")),
+                description = r.getString("description"),
+                date        = LocalDate.parse(r.getString("date")),
+                rawInput    = r.optString("rawInput", "")
+            )
+        }
+        ImportStagedData(entries, repository.count())
+    }
+
+    suspend fun commitImport(data: ImportStagedData, merge: Boolean) =
+        withContext(Dispatchers.IO) {
+            if (merge) repository.insertAll(data.entries)
+            else       repository.replaceAll(data.entries)
+        }
 
     // ── Model fetching ────────────────────────────────────────────────────────
 
