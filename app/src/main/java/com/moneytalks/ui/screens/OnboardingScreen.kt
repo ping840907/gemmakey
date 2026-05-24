@@ -30,7 +30,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.moneytalks.ai.ModelDownloadManager
-import com.moneytalks.viewmodel.GEMINI_MODELS
 import com.moneytalks.viewmodel.OnboardingViewModel
 import kotlinx.coroutines.delay
 
@@ -74,7 +73,8 @@ fun OnboardingScreen(
                         apiKey           = uiState.apiKey,
                         onApiKeyChange   = viewModel::setApiKey,
                         modelName        = uiState.modelName,
-                        availableModels  = GEMINI_MODELS,
+                        availableModels  = uiState.availableModels,
+                        modelsLoading    = uiState.modelsLoading,
                         onModelChange    = viewModel::setModelName,
                         onBack           = viewModel::prevPage,
                         onComplete       = { viewModel.complete(); onComplete() }
@@ -459,6 +459,7 @@ private fun ApiKeyPage(
     onApiKeyChange: (String) -> Unit,
     modelName: String,
     availableModels: List<String>,
+    modelsLoading: Boolean,
     onModelChange: (String) -> Unit,
     onBack: () -> Unit,
     onComplete: () -> Unit
@@ -515,21 +516,30 @@ private fun ApiKeyPage(
         Spacer(Modifier.height(12.dp))
 
         ExposedDropdownMenuBox(
-            expanded         = modelExpanded,
-            onExpandedChange = { modelExpanded = it }
+            expanded         = modelExpanded && !modelsLoading,
+            onExpandedChange = { if (!modelsLoading) modelExpanded = it }
         ) {
             OutlinedTextField(
                 value         = modelName.ifBlank { availableModels.firstOrNull() ?: "" },
                 onValueChange = {},
                 readOnly      = true,
                 label         = { Text("模型") },
-                trailingIcon  = { ExposedDropdownMenuDefaults.TrailingIcon(modelExpanded) },
+                trailingIcon  = {
+                    if (modelsLoading) {
+                        CircularProgressIndicator(
+                            modifier  = Modifier.size(20.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        ExposedDropdownMenuDefaults.TrailingIcon(modelExpanded)
+                    }
+                },
                 modifier      = Modifier
                     .menuAnchor(MenuAnchorType.PrimaryNotEditable)
                     .fillMaxWidth()
             )
             ExposedDropdownMenu(
-                expanded         = modelExpanded,
+                expanded         = modelExpanded && !modelsLoading,
                 onDismissRequest = { modelExpanded = false }
             ) {
                 availableModels.forEach { name ->
