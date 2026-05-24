@@ -28,7 +28,7 @@ class PromptBuilder @Inject constructor() {
         val todayStr  = today.format(DateTimeFormatter.ISO_LOCAL_DATE)
         val yesterday = today.minusDays(1).format(DateTimeFormatter.ISO_LOCAL_DATE)
         return """
-你是 GemmaKey 記帳助理。今天：$todayStr
+你是記帳助理。今天：$todayStr
 
 [任務]
 1. 用戶描述消費或收入 → 輸出 <tool_call> 記錄（見格式）
@@ -75,7 +75,7 @@ class PromptBuilder @Inject constructor() {
         val todayStr    = today.format(DateTimeFormatter.ISO_LOCAL_DATE)
         val todayChinese = today.format(DateTimeFormatter.ofPattern("yyyy年M月d日"))
         return """
-你是 GemmaKey 智慧記帳助理。今天是 $todayChinese（$todayStr）。
+你是智慧記帳助理。今天是 $todayChinese（$todayStr）。
 
 【記帳】
 用戶在「用戶訊息」中描述新消費或收入時，呼叫 record_expense 工具：

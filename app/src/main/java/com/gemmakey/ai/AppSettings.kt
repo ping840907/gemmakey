@@ -22,7 +22,7 @@ enum class BackendType { GEMMA_LOCAL, GEMINI_API }
 @Singleton
 class AppSettings @Inject constructor(@ApplicationContext context: Context) {
 
-    private val prefs = context.getSharedPreferences("gemmakey_settings", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences("tanqian_settings", Context.MODE_PRIVATE)
 
     // ── BackendMode (user preference) ────────────────────────────────────────
 
@@ -45,6 +45,12 @@ class AppSettings @Inject constructor(@ApplicationContext context: Context) {
     var geminiModelName: String
         get() = prefs.getString("gemini_model", "gemini-2.0-flash") ?: "gemini-2.0-flash"
         set(value) { prefs.edit().putString("gemini_model", value).apply() }
+
+    // ── Onboarding ───────────────────────────────────────────────────────────
+
+    var onboardingCompleted: Boolean
+        get() = prefs.getBoolean("onboarding_completed", false)
+        set(value) { prefs.edit().putBoolean("onboarding_completed", value).apply() }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 

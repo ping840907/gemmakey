@@ -15,7 +15,7 @@ private val LightColorScheme = lightColorScheme(
 )
 
 @Composable
-fun GemmaKeyTheme(
+fun TanQianTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = true,
     content: @Composable () -> Unit

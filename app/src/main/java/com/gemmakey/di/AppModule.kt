@@ -18,7 +18,7 @@ object AppModule {
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): AppDatabase =
-        Room.databaseBuilder(context, AppDatabase::class.java, "gemmakey.db")
+        Room.databaseBuilder(context, AppDatabase::class.java, "tanqian.db")
             .fallbackToDestructiveMigration()
             .build()
 

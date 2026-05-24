@@ -43,7 +43,7 @@ private const val MAX_HISTORY_TO_GEMMA = 5   // turns injected as text prefix in
 
 private val WELCOME_MESSAGE = ChatMessage(
     role = MessageRole.ASSISTANT,
-    text = "你好！我是 GemmaKey 記帳助理 ✨\n\n你可以：\n• 直接說「午餐花了 150 元」讓我記錄\n• 拍下收據或帳單讓我辨識\n• 問我「這個月花了多少」等問題"
+    text = "你好！我是你的記帳助理 ✨\n\n你可以：\n• 直接說「午餐花了 150 元」讓我記錄\n• 拍下收據或帳單讓我辨識\n• 問我「這個月花了多少」等問題"
 )
 
 data class ChatUiState(

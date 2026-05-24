@@ -15,22 +15,36 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.compose.*
+import com.gemmakey.ai.AppSettings
 import com.gemmakey.ui.screens.ChatScreen
 import com.gemmakey.ui.screens.HistoryScreen
+import com.gemmakey.ui.screens.OnboardingScreen
 import com.gemmakey.ui.screens.SettingsScreen
 import com.gemmakey.ui.screens.StatisticsScreen
-import com.gemmakey.ui.theme.GemmaKeyTheme
+import com.gemmakey.ui.theme.TanQianTheme
 import com.gemmakey.viewmodel.ChatViewModel
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    @Inject lateinit var appSettings: AppSettings
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            GemmaKeyTheme {
-                GemmaKeyApp()
+            TanQianTheme {
+                var showOnboarding by remember { mutableStateOf(!appSettings.onboardingCompleted) }
+
+                if (showOnboarding) {
+                    OnboardingScreen(
+                        onComplete = { showOnboarding = false }
+                    )
+                } else {
+                    MoneyTalksApp()
+                }
             }
         }
     }
@@ -65,7 +79,7 @@ private sealed class NavDestination(
 }
 
 @Composable
-private fun GemmaKeyApp() {
+private fun MoneyTalksApp() {
     val navController = rememberNavController()
     val backstackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backstackEntry?.destination?.route
@@ -113,7 +127,6 @@ private fun GemmaKeyApp() {
             composable(NavDestination.Settings.route) {
                 SettingsScreen(
                     onSaved = {
-                        // Reinitialize backend then navigate back to chat
                         chatViewModel.reinitialize()
                         navController.navigate(NavDestination.Chat.route) {
                             popUpTo(NavDestination.Chat.route) { inclusive = true }

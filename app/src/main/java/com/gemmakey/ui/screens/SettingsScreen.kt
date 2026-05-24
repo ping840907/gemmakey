@@ -2,23 +2,24 @@ package com.gemmakey.ui.screens
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.gemmakey.ai.BackendMode
+import com.gemmakey.ai.ModelDownloadManager
 import com.gemmakey.viewmodel.SettingsViewModel
 
 private data class ModeOption(
@@ -51,7 +52,8 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel(),
     onSaved: () -> Unit = {}
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState       by viewModel.uiState.collectAsState()
+    val downloadState by viewModel.modelDownload.state.collectAsState()
     var showApiKey by remember { mutableStateOf(false) }
     var modelMenuExpanded by remember { mutableStateOf(false) }
 
@@ -105,6 +107,117 @@ fun SettingsScreen(
                             )
                         }
                     }
+                }
+            }
+        }
+
+        // ── Local Gemma model ─────────────────────────────────────────────────
+        Text("本地 AI 模型", style = MaterialTheme.typography.titleMedium)
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.Memory,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                        Text("Gemma 4 E2B", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "離線運行 · 保護隱私 · 約 2 GB",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    if (uiState.isGemmaInstalled) {
+                        Icon(
+                            Icons.Default.CheckCircle,
+                            contentDescription = "已安裝",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
+                when {
+                    uiState.isGemmaInstalled && downloadState !is ModelDownloadManager.DownloadState.Downloading -> {
+                        Text(
+                            "✓ 模型已安裝，可離線使用",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                    downloadState is ModelDownloadManager.DownloadState.Downloading -> {
+                        val dl = downloadState as ModelDownloadManager.DownloadState.Downloading
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    "${dl.downloadedMb} / ${if (dl.totalMb > 0) "${dl.totalMb} MB" else "計算中"}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    "${(dl.progress * 100).toInt()}%",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                            LinearProgressIndicator(
+                                progress = { dl.progress },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                    downloadState is ModelDownloadManager.DownloadState.Done -> {
+                        Text(
+                            "✓ 下載完成！請儲存設定並重新啟動",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    downloadState is ModelDownloadManager.DownloadState.Failed -> {
+                        Text(
+                            "⚠️ ${(downloadState as ModelDownloadManager.DownloadState.Failed).error}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    else -> {}
+                }
+
+                val isDownloading = downloadState is ModelDownloadManager.DownloadState.Downloading
+                OutlinedButton(
+                    onClick = if (isDownloading) viewModel.modelDownload::cancelDownload
+                              else viewModel.modelDownload::startDownload,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    enabled = !uiState.isGemmaInstalled || isDownloading
+                ) {
+                    Icon(
+                        if (isDownloading) Icons.Default.Cancel else Icons.Default.Download,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        when {
+                            isDownloading -> "取消下載"
+                            uiState.isGemmaInstalled -> "已安裝"
+                            downloadState is ModelDownloadManager.DownloadState.Failed -> "重新下載"
+                            else -> "下載模型"
+                        },
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                 }
             }
         }

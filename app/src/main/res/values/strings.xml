@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">GemmaKey 記帳</string>
+    <string name="app_name">MoneyTalks</string>
     <string name="tab_chat">記帳</string>
     <string name="tab_history">明細</string>
     <string name="tab_stats">統計</string>
@@ -18,10 +18,10 @@
     <string name="label_description">備註</string>
     <string name="label_type_expense">支出</string>
     <string name="label_type_income">收入</string>
-    <string name="model_loading">正在載入 Gemma 4 模型...</string>
+    <string name="model_loading">正在載入 Gemma 4 模型…</string>
     <string name="model_ready">模型就緒，GPU 加速中</string>
-    <string name="model_not_found">找不到模型檔案，請將模型放入 assets/gemma4/ 資料夾</string>
-    <string name="listening">聆聽中...</string>
-    <string name="processing">AI 處理中...</string>
+    <string name="model_not_found">找不到模型檔案，請至設定頁面下載模型</string>
+    <string name="listening">聆聽中…</string>
+    <string name="processing">AI 處理中…</string>
     <string name="no_records">尚無記帳記錄</string>
 </resources>

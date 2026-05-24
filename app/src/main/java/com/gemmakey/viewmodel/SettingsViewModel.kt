@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.gemmakey.ai.AppSettings
 import com.gemmakey.ai.BackendMode
 import com.gemmakey.ai.GemmaInferenceManager
+import com.gemmakey.ai.ModelDownloadManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -43,7 +44,8 @@ data class SettingsUiState(
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val appSettings: AppSettings,
-    private val gemma: GemmaInferenceManager
+    private val gemma: GemmaInferenceManager,
+    val modelDownload: ModelDownloadManager
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(
@@ -62,6 +64,15 @@ class SettingsViewModel @Inject constructor(
         // If a key is already saved, fetch models on open
         val savedKey = appSettings.geminiApiKey
         if (savedKey.isNotBlank()) scheduleFetch(savedKey, debounceMs = 0)
+
+        // Refresh model installation status when download completes
+        viewModelScope.launch {
+            modelDownload.state.collect { state ->
+                if (state is ModelDownloadManager.DownloadState.Done) {
+                    _uiState.update { it.copy(isGemmaInstalled = gemma.isModelInstalled()) }
+                }
+            }
+        }
     }
 
     fun setBackendMode(mode: BackendMode) {

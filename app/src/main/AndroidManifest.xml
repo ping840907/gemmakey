@@ -13,13 +13,13 @@
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <application
-        android:name=".GemmaKeyApplication"
+        android:name=".TanQianApplication"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.GemmaKey"
+        android:theme="@style/Theme.MoneyTalks"
         android:largeHeap="true"
         android:hardwareAccelerated="true">
 
@@ -28,7 +28,7 @@
             android:exported="true"
             android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize"
-            android:theme="@style/Theme.GemmaKey">
+            android:theme="@style/Theme.MoneyTalks">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
