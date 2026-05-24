@@ -176,11 +176,12 @@ private fun DateHeader(date: LocalDate) {
 @Composable
 private fun SwipeableExpenseRow(entry: ExpenseEntry, onDelete: () -> Unit) {
     val dismissState = rememberSwipeToDismissBoxState(
-        confirmValueChange = { value ->
-            if (value == SwipeToDismissBoxValue.EndToStart) { onDelete(); true } else false
-        },
         positionalThreshold = { it * 0.4f }
     )
+
+    LaunchedEffect(dismissState.currentValue) {
+        if (dismissState.currentValue == SwipeToDismissBoxValue.EndToStart) onDelete()
+    }
 
     SwipeToDismissBox(
         state = dismissState,

@@ -7,6 +7,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.ListAlt
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -62,7 +64,7 @@ private sealed class NavDestination(
     )
     data object History : NavDestination(
         "history", R.string.tab_history,
-        Icons.Default.ListAlt, Icons.Default.List
+        Icons.AutoMirrored.Filled.ListAlt, Icons.AutoMirrored.Filled.List
     )
     data object Statistics : NavDestination(
         "stats", R.string.tab_stats,
