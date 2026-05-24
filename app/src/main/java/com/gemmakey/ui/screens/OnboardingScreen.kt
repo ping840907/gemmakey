@@ -111,13 +111,13 @@ private fun WelcomePage(onNext: () -> Unit) {
         Spacer(Modifier.height(24.dp))
 
         Text(
-            "MoneyTalks",
+            "談錢",
             style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold),
             color = MaterialTheme.colorScheme.primary
         )
 
         Text(
-            "談錢",
+            "MoneyTalks",
             style = MaterialTheme.typography.titleLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

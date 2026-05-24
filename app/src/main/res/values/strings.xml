@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">MoneyTalks</string>
+    <string name="app_name">談錢</string>
     <string name="tab_chat">記帳</string>
     <string name="tab_history">明細</string>
     <string name="tab_stats">統計</string>
