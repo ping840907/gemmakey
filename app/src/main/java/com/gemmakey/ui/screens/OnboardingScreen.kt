@@ -1,8 +1,11 @@
 package com.gemmakey.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -17,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -426,7 +430,8 @@ private fun LocalModelPage(
         OutlinedButton(
             onClick  = onNext,
             modifier = Modifier.fillMaxWidth().height(52.dp),
-            shape    = RoundedCornerShape(14.dp)
+            shape    = RoundedCornerShape(14.dp),
+            enabled  = !isDownloading
         ) {
             Text(if (isDone) "下一步" else "跳過，稍後設定", style = MaterialTheme.typography.titleSmall)
             if (isDone) {
@@ -500,8 +505,18 @@ private fun ApiKeyPage(
 
         Spacer(Modifier.height(10.dp))
 
+        val context = LocalContext.current
         Row(
-            modifier          = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                    val intent = Intent(
+                        Intent.ACTION_VIEW,
+                        Uri.parse("https://aistudio.google.com/api-keys")
+                    )
+                    context.startActivity(intent)
+                }
+                .padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
