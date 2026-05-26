@@ -87,9 +87,9 @@ fun ChatScreen(viewModel: ChatViewModel = hiltViewModel()) {
 
         // Input bar
         InputBar(
-            isGenerating  = uiState.isGenerating,
-            onSendText    = viewModel::sendTextMessage,
-            onVoiceResult = viewModel::sendVoiceResult,
+            isGenerating    = uiState.isGenerating,
+            onSendText      = viewModel::sendTextMessage,
+            onAudioRecorded = viewModel::sendNativeAudio,
             onImageSelected = { uri -> viewModel.sendImageUri(uri) }
         )
     }

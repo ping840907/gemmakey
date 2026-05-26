@@ -307,6 +307,17 @@ class ChatViewModel @Inject constructor(
         processInput(userText = transcribed, bitmap = null, rawInput = transcribed)
     }
 
+    fun sendNativeAudio(wavBytes: ByteArray) {
+        if (_uiState.value.isGenerating) return
+        appendUserMessage("🎤 語音輸入中…")
+        processInput(
+            userText = "請聆聽這段語音，辨識說話內容，並根據內容進行記帳或回答問題。",
+            bitmap   = null,
+            rawInput = "語音輸入",
+            wavBytes = wavBytes
+        )
+    }
+
     /**
      * Preferred image entry point: decodes [uri] on the IO thread using the
      * device-appropriate max resolution, guards against low-heap conditions,
@@ -350,7 +361,7 @@ class ChatViewModel @Inject constructor(
 
     // ── Core inference ────────────────────────────────────────────────────────
 
-    private fun processInput(userText: String, bitmap: Bitmap?, rawInput: String) {
+    private fun processInput(userText: String, bitmap: Bitmap?, rawInput: String, wavBytes: ByteArray? = null) {
         val state = _uiState.value
         if (!state.inferenceState.isReady) {
             appendAssistantMessage(
@@ -375,10 +386,10 @@ class ChatViewModel @Inject constructor(
                 val messageText = promptBuilder.buildUserMessage(userText, ragContext, history)
 
                 val assistantReply = when (_uiState.value.backendType) {
-                    BackendType.GEMMA_LOCAL -> processWithGemma(messageText, bitmap, loadingId, rawInput)
+                    BackendType.GEMMA_LOCAL -> processWithGemma(messageText, bitmap, loadingId, rawInput, wavBytes)
                     BackendType.GEMINI_API  -> {
                         try {
-                            processWithGemini(messageText, bitmap, loadingId, rawInput)
+                            processWithGemini(messageText, bitmap, loadingId, rawInput, wavBytes)
                         } catch (e: Throwable) {
                             if (appSettings.backendMode == BackendMode.SMART && e !is OutOfMemoryError) {
                                 // Gemini unavailable (API error, billing limit, etc.) → fall back to Gemma
@@ -388,7 +399,7 @@ class ChatViewModel @Inject constructor(
                                     val fallbackHistory = pendingHistoryForGemma
                                     pendingHistoryForGemma = emptyList()
                                     val fallbackMsg = promptBuilder.buildUserMessage(userText, ragContext, fallbackHistory)
-                                    processWithGemma(fallbackMsg, null, loadingId, rawInput)
+                                    processWithGemma(fallbackMsg, null, loadingId, rawInput, wavBytes)
                                 } else {
                                     finaliseMessage(loadingId, "❌ Gemini 無法使用，且 Gemma 也無法啟動")
                                     null
@@ -427,7 +438,7 @@ class ChatViewModel @Inject constructor(
 
     // Returns the final assistant text (for history), or null if it was a tool call preview
     private suspend fun processWithGemma(
-        messageText: String, bitmap: Bitmap?, loadingId: Long, rawInput: String
+        messageText: String, bitmap: Bitmap?, loadingId: Long, rawInput: String, wavBytes: ByteArray? = null
     ): String? {
         // Proactively recycle conversation before the KV-cache fills up.
         // Threshold is tier-aware: low-end devices recycle more aggressively.
@@ -441,10 +452,11 @@ class ChatViewModel @Inject constructor(
 
         toolSet.clearLastCall()
         val responseBuilder = StringBuilder()
-        val stream = if (bitmap != null)
-            gemma.generateStreamWithImage(messageText, bitmap, conversation)
-        else
-            gemma.generateStream(messageText, conversation)
+        val stream = when {
+            wavBytes != null -> gemma.generateStreamWithAudio(wavBytes, messageText, conversation)
+            bitmap != null   -> gemma.generateStreamWithImage(messageText, bitmap, conversation)
+            else             -> gemma.generateStream(messageText, conversation)
+        }
 
         // Throttled UI updates: calling toString() on every token creates O(n²)
         // intermediate String objects. We repaint at most every streamUiIntervalMs ms.
@@ -477,13 +489,17 @@ class ChatViewModel @Inject constructor(
     }
 
     private suspend fun processWithGemini(
-        messageText: String, bitmap: Bitmap?, loadingId: Long, rawInput: String
+        messageText: String, bitmap: Bitmap?, loadingId: Long, rawInput: String, wavBytes: ByteArray? = null
     ): String? {
         gemini.clearToolCall()
         val responseBuilder = StringBuilder()
 
+        val geminiFlow = when {
+            wavBytes != null -> gemini.generateStreamWithAudio(wavBytes, messageText)
+            else             -> gemini.generateStream(messageText, bitmap)
+        }
         var lastPaintMs = 0L
-        gemini.generateStream(messageText, bitmap).collect { chunk ->
+        geminiFlow.collect { chunk ->
             responseBuilder.append(chunk)
             val now = System.currentTimeMillis()
             if (now - lastPaintMs >= deviceCapability.streamUiIntervalMs) {

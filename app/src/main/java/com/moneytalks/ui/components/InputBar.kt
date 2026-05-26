@@ -3,13 +3,10 @@ package com.moneytalks.ui.components
 import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -22,21 +19,23 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import com.moneytalks.audio.AudioRecorder
 import com.moneytalks.utils.ImageUtils
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 @Composable
 fun InputBar(
     isGenerating: Boolean,
     onSendText: (String) -> Unit,
-    onVoiceResult: (String) -> Unit,
+    onAudioRecorded: (ByteArray) -> Unit,
     onImageSelected: (Uri) -> Unit
 ) {
     val context = LocalContext.current
@@ -46,34 +45,39 @@ fun InputBar(
     var text by remember { mutableStateOf("") }
     var isListening by remember { mutableStateOf(false) }
     var showImageOptions by remember { mutableStateOf(false) }
-    var voiceError by remember { mutableStateOf<String?>(null) }
+    var amplitude by remember { mutableStateOf(0f) }
+
+    val audioRecorder = remember { AudioRecorder() }
+    val recordingJob = remember { mutableStateOf<Job?>(null) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            recordingJob.value?.cancel()
+            audioRecorder.stopAndGetWav()
+        }
+    }
+
+    fun stopRecording() {
+        recordingJob.value?.cancel()
+        recordingJob.value = null
+        val wav = audioRecorder.stopAndGetWav()
+        amplitude = 0f
+        isListening = false
+        wav?.let { onAudioRecorded(it) }
+    }
+
+    fun startRecording() {
+        isListening = true
+        recordingJob.value = coroutineScope.launch {
+            audioRecorder.start { amp -> amplitude = amp }
+        }
+    }
 
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
 
-    val speechRecognizer = remember {
-        if (SpeechRecognizer.isRecognitionAvailable(context))
-            SpeechRecognizer.createSpeechRecognizer(context)
-        else null
-    }
-    DisposableEffect(Unit) { onDispose { speechRecognizer?.destroy() } }
-
     val audioPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            isListening = true
-            startListening(
-                recognizer = speechRecognizer,
-                context = context,
-                onResult = { result -> isListening = false; onVoiceResult(result) },
-                onError = { msg ->
-                    isListening = false
-                    voiceError = msg
-                    coroutineScope.launch { delay(3000); voiceError = null }
-                }
-            )
-        }
-    }
+    ) { granted -> if (granted) startRecording() }
 
     val cameraLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture()
@@ -89,35 +93,12 @@ fun InputBar(
         ActivityResultContracts.GetContent()
     ) { uri -> uri?.let { onImageSelected(it) } }
 
-    Column {
-        // Voice error strip
-        AnimatedVisibility(
-            visible = voiceError != null,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut()
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.errorContainer)
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Icon(
-                    Icons.Default.ErrorOutline,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.onErrorContainer
-                )
-                Text(
-                    voiceError ?: "",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onErrorContainer
-                )
-            }
-        }
+    val micScale by animateFloatAsState(
+        targetValue = if (isListening) 1f + amplitude * 0.25f else 1f,
+        label = "micScale"
+    )
 
+    Column {
         // Image option row (expandable)
         AnimatedVisibility(visible = showImageOptions) {
             Row(
@@ -180,10 +161,11 @@ fun InputBar(
             )
 
             if (text.isBlank()) {
-                // Voice button
+                // Voice button — scales with mic amplitude while recording
                 Box(
                     modifier = Modifier
                         .size(48.dp)
+                        .scale(micScale)
                         .clip(CircleShape)
                         .background(
                             if (isListening) MaterialTheme.colorScheme.errorContainer
@@ -192,33 +174,18 @@ fun InputBar(
                     contentAlignment = Alignment.Center
                 ) {
                     IconButton(onClick = {
-                        if (isListening) {
-                            speechRecognizer?.stopListening()
-                            isListening = false
-                        } else {
+                        if (isListening) stopRecording()
+                        else {
                             val hasPerm = ContextCompat.checkSelfPermission(
                                 context, Manifest.permission.RECORD_AUDIO
                             ) == PackageManager.PERMISSION_GRANTED
-                            if (hasPerm) {
-                                isListening = true
-                                startListening(
-                                    recognizer = speechRecognizer,
-                                    context = context,
-                                    onResult = { result -> isListening = false; onVoiceResult(result) },
-                                    onError = { msg ->
-                                        isListening = false
-                                        voiceError = msg
-                                        coroutineScope.launch { delay(3000); voiceError = null }
-                                    }
-                                )
-                            } else {
-                                audioPermission.launch(Manifest.permission.RECORD_AUDIO)
-                            }
+                            if (hasPerm) startRecording()
+                            else audioPermission.launch(Manifest.permission.RECORD_AUDIO)
                         }
                     }) {
                         Icon(
                             if (isListening) Icons.Default.Stop else Icons.Default.Mic,
-                            contentDescription = if (isListening) "停止" else "語音輸入",
+                            contentDescription = if (isListening) "停止錄音" else "語音輸入",
                             tint = if (isListening) MaterialTheme.colorScheme.error
                                    else MaterialTheme.colorScheme.primary
                         )
@@ -269,45 +236,4 @@ private fun ImageOptionChip(
         label = { Text(label) },
         leadingIcon = { Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp)) }
     )
-}
-
-private fun startListening(
-    recognizer: SpeechRecognizer?,
-    context: android.content.Context,
-    onResult: (String) -> Unit,
-    onError: (String) -> Unit = {}
-) {
-    recognizer ?: return
-    val intent = android.content.Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-TW")
-        putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-    }
-    recognizer.setRecognitionListener(object : RecognitionListener {
-        override fun onResults(results: Bundle?) {
-            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            onResult(matches?.firstOrNull() ?: "")
-        }
-        override fun onError(error: Int) {
-            val msg = when (error) {
-                SpeechRecognizer.ERROR_NETWORK,
-                SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "網路錯誤，請檢查連線"
-                SpeechRecognizer.ERROR_NO_MATCH        -> "未偵測到語音，請再試一次"
-                SpeechRecognizer.ERROR_SPEECH_TIMEOUT  -> "語音逾時，請再試一次"
-                SpeechRecognizer.ERROR_AUDIO           -> "麥克風錯誤"
-                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "語音辨識忙碌中"
-                else                                   -> "語音辨識失敗"
-            }
-            onError(msg)
-        }
-        override fun onReadyForSpeech(params: Bundle?) {}
-        override fun onBeginningOfSpeech() {}
-        override fun onRmsChanged(rmsdB: Float) {}
-        override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() {}
-        override fun onPartialResults(partialResults: Bundle?) {}
-        override fun onEvent(eventType: Int, params: Bundle?) {}
-    })
-    recognizer.startListening(intent)
 }

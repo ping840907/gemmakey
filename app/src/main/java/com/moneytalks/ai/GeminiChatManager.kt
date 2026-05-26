@@ -143,6 +143,31 @@ class GeminiChatManager @Inject constructor(
         awaitClose()
     }.flowOn(Dispatchers.IO)
 
+    fun generateStreamWithAudio(wavBytes: ByteArray, prompt: String): Flow<String> = callbackFlow {
+        val c = chat ?: run { trySend("[Gemini 未初始化]"); close(); return@callbackFlow }
+        lastToolCall = null
+        try {
+            val inputContent = content("user") {
+                blob("audio/wav", wavBytes)
+                if (prompt.isNotBlank()) text(prompt)
+            }
+            val stream = c.sendMessageStream(inputContent)
+            stream.collect { response ->
+                response.text?.let { trySend(it) }
+                response.candidates?.firstOrNull()?.content?.parts
+                    ?.filterIsInstance<FunctionCallPart>()
+                    ?.firstOrNull()
+                    ?.let { parseFunctionCall(it) }
+            }
+            close()
+        } catch (e: Throwable) {
+            Log.e(TAG, "Audio stream error", e)
+            trySend("❌ Gemini 語音 API 錯誤：${e.message}")
+            close(e)
+        }
+        awaitClose()
+    }.flowOn(Dispatchers.IO)
+
     // ── 單次推論（確認訊息用）────────────────────────────────────────────────
 
     suspend fun sendFunctionResponse(functionName: String, result: Map<String, String>): String =

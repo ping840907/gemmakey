@@ -165,6 +165,9 @@ class GemmaInferenceManager @Inject constructor(
             modelPath     = modelPath,
             backend       = backend,
             visionBackend = visionBackend,
+            // Audio encoder must always run on CPU (AI Edge Gallery constraint).
+            // Enables Content.AudioBytes for native audio transcription (Gemma 3n / Gemma 4).
+            audioBackend  = Backend.CPU(),
             maxNumTokens  = MAX_TOKENS,
             cacheDir      = if (modelPath.startsWith("/data/local/tmp"))
                 context.getExternalFilesDir(null)?.absolutePath else null
@@ -290,6 +293,56 @@ class GemmaInferenceManager @Inject constructor(
             if (active.get()) {
                 Log.e(TAG, "generateStreamWithImage setup error", e)
                 trySend(if (e is OutOfMemoryError) "❌ 圖片過大，記憶體不足" else "❌ 圖片推論錯誤：${e.message}")
+                close()
+            }
+        }
+        awaitClose { active.set(false) }
+    }
+
+    // ── 原生音訊推論（WAV → Content.AudioBytes）──────────────────────────────
+    //
+    // Mirrors AI Edge Gallery's LlmChatModelHelper audio path.
+    // [wavBytes] must be a complete RIFF/WAV file: 16 kHz, mono, PCM-16.
+    // Requires the model to have an audio encoder (Gemma 3n; Gemma 4 may
+    // return an error — callbackFlow catches it and forwards the message).
+    // Falls back gracefully: if the runtime rejects audio, callers should
+    // retry with generateStream(prompt) using a text-only transcript.
+
+    fun generateStreamWithAudio(
+        wavBytes: ByteArray,
+        prompt: String,
+        conversation: Conversation? = null
+    ): Flow<String> = callbackFlow {
+        val conv = conversation ?: runCatching { createConversation() }.getOrNull()
+            ?: run { trySend("[模型未初始化]"); close(); return@callbackFlow }
+
+        val active = AtomicBoolean(true)
+
+        try {
+            val parts = buildList<Content> {
+                add(Content.AudioBytes(wavBytes))
+                if (prompt.isNotBlank()) add(Content.Text(prompt))
+            }
+            conv.sendMessageAsync(
+                Contents.of(parts),
+                object : MessageCallback {
+                    override fun onMessage(message: Message) {
+                        if (active.get()) trySend(message.toString())
+                    }
+                    override fun onDone() { if (active.get()) close() }
+                    override fun onError(throwable: Throwable) {
+                        if (!active.get()) return
+                        Log.e(TAG, "Audio inference error", throwable)
+                        trySend("❌ 語音推論錯誤：${throwable.message}")
+                        close()
+                    }
+                },
+                emptyMap()
+            )
+        } catch (e: Throwable) {
+            if (active.get()) {
+                Log.e(TAG, "generateStreamWithAudio setup error", e)
+                trySend("❌ 語音推論錯誤：${e.message}")
                 close()
             }
         }
